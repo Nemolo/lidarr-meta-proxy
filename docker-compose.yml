@@ -1,0 +1,46 @@
+# Example: Lidarr + lidarr-meta-proxy on the same network.
+# After the first start run scripts/set-metadata-source.sh to point Lidarr at the proxy.
+services:
+  lidarr-meta:
+    build: .
+    image: lidarr-meta-proxy:latest
+    container_name: lidarr-meta
+    restart: unless-stopped
+    environment:
+      # URL under which Lidarr reaches the proxy (image URLs are built from it).
+      PUBLIC_URL: http://lidarr-meta:5001
+      MB_USER_AGENT: "lidarr-meta-proxy/0.1 ( you@example.com )"
+      ITUNES_COUNTRY: it
+      # Optional secondary source:
+      # SPOTIFY_CLIENT_ID: ...
+      # SPOTIFY_CLIENT_SECRET: ...
+      RUST_LOG: info,lidarr_meta_proxy=debug
+    volumes:
+      - lidarr-meta-data:/data
+    networks: [media]
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    restart: unless-stopped
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Europe/Rome
+    volumes:
+      - lidarr-config:/config
+      - ./music:/music
+      - ./downloads:/downloads
+    ports:
+      - "8686:8686"
+    depends_on:
+      lidarr-meta:
+        condition: service_healthy
+    networks: [media]
+
+volumes:
+  lidarr-meta-data:
+  lidarr-config:
+
+networks:
+  media:
