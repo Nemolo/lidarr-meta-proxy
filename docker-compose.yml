@@ -2,8 +2,9 @@
 # After the first start run scripts/set-metadata-source.sh to point Lidarr at the proxy.
 services:
   lidarr-meta:
-    build: .
-    image: lidarr-meta-proxy:latest
+    # Published image; to build from source instead, uncomment `build` (and run `docker compose build`).
+    image: ghcr.io/nemolo/lidarr-meta-proxy:latest
+    # build: .
     container_name: lidarr-meta
     restart: unless-stopped
     environment:

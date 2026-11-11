@@ -15,7 +15,7 @@ Rust (axum, tokio, sqlx/SQLite WAL, reqwest/rustls), distribuito come container 
 ## Avvio rapido
 
 ```sh
-docker compose up -d --build
+docker compose up -d   # usa ghcr.io/nemolo/lidarr-meta-proxy:latest
 # chiave API: Lidarr → Settings → General → Security
 LIDARR_URL=http://localhost:8686 LIDARR_API_KEY=... ./scripts/set-metadata-source.sh http://lidarr-meta:5001
 ```
@@ -149,6 +149,24 @@ MB con lo stesso UUID.
 
 `migrations/` (applicate all'avvio con `sqlx::migrate!`): `entity`, `source_link`, `upstream_cache`,
 `source_cache` (risposte Deezer/Spotify/MB/iTunes), `image`, `entity_image`, `reconcile_log`, `enrichment`.
+
+## Release
+
+Il workflow `.github/workflows/release.yml` pubblica, per ogni versione:
+
+- l'immagine Docker multi-arch (linux/amd64, linux/arm64) su `ghcr.io/nemolo/lidarr-meta-proxy`
+  con i tag `X.Y.Z`, `X.Y` e `latest` (le pre-release, es. `0.2.0-rc.1`, solo con il tag esatto);
+- una GitHub Release con note generate dai commit/PR, binari Linux x86_64 e aarch64 (glibc ≥ 2.35)
+  e checksum SHA-256.
+
+Per rilasciare: aggiornare `version` in `Cargo.toml` (e `Cargo.lock` con `cargo check`), fare il commit su `main`, poi
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+oppure Actions → **Release** → *Run workflow* indicando la versione (il tag viene creato dalla release).
+Il workflow si ferma se la versione non coincide con `Cargo.toml` o se il tag esiste già.
 
 ## Sviluppo
 
