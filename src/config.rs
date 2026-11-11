@@ -36,6 +36,8 @@ pub struct Config {
     /// Max number of synthetic results added to a search response per source.
     pub search_limit: usize,
     pub enrich_mb_artists: bool,
+    /// Namespace of the UUID v5 synthetic IDs (`UUID_NAMESPACE`: a UUID or a seed string).
+    pub id_namespace: uuid::Uuid,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -115,6 +117,9 @@ impl Config {
             search_mb_lookups: var_or("SEARCH_MB_LOOKUPS", "5").parse().context("SEARCH_MB_LOOKUPS")?,
             search_limit: var_or("SEARCH_LIMIT", "10").parse().context("SEARCH_LIMIT")?,
             enrich_mb_artists: bool_var("ENRICH_MB_ARTISTS", true)?,
+            id_namespace: var("UUID_NAMESPACE")
+                .map(|v| crate::ids::parse_namespace(&v))
+                .unwrap_or(crate::ids::DEFAULT_NAMESPACE),
         })
     }
 
@@ -150,6 +155,7 @@ impl Config {
             search_mb_lookups: 5,
             search_limit: 10,
             enrich_mb_artists: true,
+            id_namespace: crate::ids::DEFAULT_NAMESPACE,
         }
     }
 }

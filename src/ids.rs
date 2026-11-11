@@ -1,10 +1,34 @@
 //! Deterministic identifiers for synthetic entities and small text helpers.
 
+use std::sync::OnceLock;
+
 use uuid::Uuid;
 
-/// Fixed project namespace for UUID v5 generation. Never change it: every synthetic
-/// ID stored in a Lidarr database derives from it.
-pub const NAMESPACE: Uuid = Uuid::from_u128(0x6c1d_a2f0_5b7e_4c3a_9f1e_2d8b_0a6c_4e51);
+/// Default namespace for UUID v5 generation (overridable with `UUID_NAMESPACE`).
+/// Every synthetic ID stored in a Lidarr database derives from the namespace in
+/// use, so it must not change once Lidarr has added synthetic entities.
+pub const DEFAULT_NAMESPACE: Uuid = Uuid::from_u128(0x6c1d_a2f0_5b7e_4c3a_9f1e_2d8b_0a6c_4e51);
+
+static NAMESPACE: OnceLock<Uuid> = OnceLock::new();
+
+/// Namespace from configuration: a UUID is used as is, any other string is a seed
+/// turned into a namespace with `uuid5(NAMESPACE_OID, seed)`.
+pub fn parse_namespace(value: &str) -> Uuid {
+    let v = value.trim();
+    Uuid::parse_str(v).unwrap_or_else(|_| Uuid::new_v5(&Uuid::NAMESPACE_OID, v.as_bytes()))
+}
+
+/// Sets the process-wide namespace. Fails if a different one was already set.
+pub fn set_namespace(ns: Uuid) -> anyhow::Result<()> {
+    let current = *NAMESPACE.get_or_init(|| ns);
+    anyhow::ensure!(current == ns, "UUID namespace already set to {current}, cannot switch to {ns}");
+    Ok(())
+}
+
+/// Namespace in use ([`DEFAULT_NAMESPACE`] unless configured).
+pub fn namespace() -> Uuid {
+    *NAMESPACE.get_or_init(|| DEFAULT_NAMESPACE)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
@@ -50,9 +74,9 @@ impl Kind {
     }
 }
 
-/// `uuid5(NS, "<source>:<kind>:<source id>")`.
+/// `uuid5(namespace, "<source>:<kind>:<source id>")`.
 pub fn synthetic_id(source: Source, kind: Kind, source_id: &str) -> String {
-    Uuid::new_v5(&NAMESPACE, format!("{}:{}:{}", source.as_str(), kind.as_str(), source_id).as_bytes()).to_string()
+    Uuid::new_v5(&namespace(), format!("{}:{}:{}", source.as_str(), kind.as_str(), source_id).as_bytes()).to_string()
 }
 
 /// Canonical lowercase hyphenated form, or `None` if `s` is not a UUID.
@@ -140,6 +164,15 @@ mod tests {
         assert_ne!(a, synthetic_id(Source::Deezer, Kind::Album, "27"));
         assert_ne!(a, synthetic_id(Source::Spotify, Kind::Artist, "27"));
         assert_eq!(Uuid::parse_str(&a).unwrap().get_version_num(), 5);
+    }
+
+    #[test]
+    fn namespace_parsing() {
+        let u = "6c1da2f0-5b7e-4c3a-9f1e-2d8b0a6c4e51";
+        assert_eq!(parse_namespace(u), DEFAULT_NAMESPACE);
+        assert_eq!(parse_namespace("my-seed"), parse_namespace(" my-seed "));
+        assert_ne!(parse_namespace("my-seed"), parse_namespace("other-seed"));
+        assert_ne!(parse_namespace("my-seed"), DEFAULT_NAMESPACE);
     }
 
     #[test]

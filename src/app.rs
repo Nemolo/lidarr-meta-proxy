@@ -64,6 +64,8 @@ pub struct Owner {
 impl App {
     pub async fn new(cfg: Config) -> Result<Self> {
         let store = Store::open(&cfg.database_path).await?;
+        store.check_namespace(&cfg.id_namespace.to_string()).await?;
+        crate::ids::set_namespace(cfg.id_namespace)?;
         std::fs::create_dir_all(&cfg.image_dir)?;
         let ua = cfg.mb_user_agent.clone();
         let http = build_http(&ua, Duration::from_secs(30));

@@ -54,6 +54,7 @@ gli URL delle immagini restituiti a Lidarr sono costruiti da lì.
 | `ENRICH_MB_ARTISTS` | `true` | Completa le discografie degli artisti MB |
 | `SEARCH_LIMIT` | `10` | Risultati Deezer/Spotify per ricerca |
 | `SEARCH_MB_LOOKUPS` | `5` | Lookup MB massimi per ricerca (deduplica) |
+| `UUID_NAMESPACE` | `6c1da2f0-5b7e-4c3a-9f1e-2d8b0a6c4e51` | Namespace degli UUID v5 sintetici: un UUID, oppure una stringa qualsiasi usata come seed (`uuid5(NAMESPACE_OID, seed)`). **Non cambiarlo dopo il primo avvio** (vedi sotto) |
 | `RUST_LOG` | `info` | Livello di log |
 
 Per i test esistono anche `DEEZER_URL`, `SPOTIFY_URL`, `SPOTIFY_AUTH_URL`, `ITUNES_URL`, `MB_URL`.
@@ -83,7 +84,10 @@ che Lidarr tratta come temporaneo. Se upstream è giù viene servita la copia in
 ### ID
 
 `uuid5(NS, "<sorgente>:<tipo>:<id>")` con `tipo` ∈ `artist`, `album`, `release`, `track`, `recording`
-(per le registrazioni l'ID è l'ISRC quando noto). Il namespace è fisso in `src/ids.rs` e non va mai cambiato.
+(per le registrazioni l'ID è l'ISRC quando noto). `NS` viene da `UUID_NAMESPACE` (default in `src/ids.rs`).
+Il namespace usato viene registrato nel database al primo avvio: se poi la variabile cambia, il proxy si rifiuta
+di partire, perché tutti gli ID sintetici già noti a Lidarr cambierebbero. Per usare un namespace diverso
+bisogna partire da un database vuoto (e da artisti sintetici non ancora aggiunti in Lidarr).
 
 ### Formato upstream
 

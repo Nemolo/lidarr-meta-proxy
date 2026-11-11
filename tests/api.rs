@@ -516,3 +516,17 @@ async fn health_reports_status() {
     assert_eq!(status, 200);
     assert_eq!(v["database"], true);
 }
+
+#[tokio::test]
+async fn namespace_is_pinned_in_the_database() {
+    use lidarr_meta_proxy::{ids::parse_namespace, store::Store};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("meta.db");
+    let ns = parse_namespace("my-seed").to_string();
+    Store::open(&db).await.unwrap().check_namespace(&ns).await.unwrap();
+    // Same value: fine. Different value: refused, IDs would all change.
+    let store = Store::open(&db).await.unwrap();
+    store.check_namespace(&ns).await.unwrap();
+    let err = store.check_namespace(&parse_namespace("other").to_string()).await.unwrap_err();
+    assert!(err.to_string().contains("UUID_NAMESPACE mismatch"), "{err}");
+}

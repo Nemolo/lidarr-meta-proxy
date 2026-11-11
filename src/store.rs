@@ -101,6 +101,38 @@ impl Store {
         Ok(Self { pool })
     }
 
+    /// Records the UUID namespace on first use and refuses to start with a different
+    /// one: every synthetic ID in the database (and in Lidarr) derives from it.
+    pub async fn check_namespace(&self, ns: &str) -> Result<()> {
+        let stored: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM meta WHERE key = 'uuid_namespace'").fetch_optional(&self.pool).await?;
+        match stored {
+            Some((v,)) if v == ns => Ok(()),
+            Some((v,)) => anyhow::bail!(
+                "UUID_NAMESPACE mismatch: the database was created with namespace {v}, configured {ns}. \
+                 Changing it would change every synthetic ID known to Lidarr; restore the previous value \
+                 or start from an empty database."
+            ),
+            None => {
+                // Databases created before this check used the default namespace.
+                let (entities,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM entity").fetch_one(&self.pool).await?;
+                let default = crate::ids::DEFAULT_NAMESPACE.to_string();
+                if entities > 0 && ns != default {
+                    anyhow::bail!(
+                        "UUID_NAMESPACE mismatch: the database already holds entities created with the default \
+                         namespace {default}, configured {ns}"
+                    );
+                }
+                let value = if entities > 0 { default } else { ns.to_string() };
+                sqlx::query("INSERT INTO meta (key, value) VALUES ('uuid_namespace', ?)")
+                    .bind(value)
+                    .execute(&self.pool)
+                    .await?;
+                Ok(())
+            }
+        }
+    }
+
     pub async fn ping(&self) -> bool {
         sqlx::query("SELECT 1").fetch_one(&self.pool).await.is_ok()
     }

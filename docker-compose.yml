@@ -11,6 +11,8 @@ services:
       PUBLIC_URL: http://lidarr-meta:5001
       MB_USER_AGENT: "lidarr-meta-proxy/0.1 ( you@example.com )"
       ITUNES_COUNTRY: it
+      # Namespace/seed of synthetic UUIDs; set it before the first start and never change it.
+      # UUID_NAMESPACE: my-instance-seed
       # Optional secondary source:
       # SPOTIFY_CLIENT_ID: ...
       # SPOTIFY_CLIENT_SECRET: ...
