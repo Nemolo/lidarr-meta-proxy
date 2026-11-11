@@ -530,3 +530,23 @@ async fn namespace_is_pinned_in_the_database() {
     let err = store.check_namespace(&parse_namespace("other").to_string()).await.unwrap_err();
     assert!(err.to_string().contains("UUID_NAMESPACE mismatch"), "{err}");
 }
+
+#[tokio::test]
+async fn enrichment_adds_nothing_when_musicbrainz_is_unavailable() {
+    let h = Harness::new().await;
+    // MB refuses the release browse (as when throttled): mounted first, so it wins.
+    Mock::given(method("GET"))
+        .and(path("/mb/release"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("throttled"))
+        .mount(&h.server)
+        .await;
+    h.mock_mb_artist_with_deezer().await;
+
+    let (status, v) = h.get(&format!("/artist/{MB_ARTIST}")).await;
+    assert_eq!(status, 200, "{v}");
+    let titles: Vec<&str> = v["albums"].as_array().unwrap().iter().map(|a| a["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, vec!["First Album"], "without the barcode check no album is added");
+    // Nothing cached: a later request retries the enrichment.
+    let (_, recent) = h.get("/recent/artist?since=0").await;
+    assert!(!recent["items"].as_array().unwrap().iter().any(|i| i == MB_ARTIST));
+}

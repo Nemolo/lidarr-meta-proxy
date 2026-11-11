@@ -235,15 +235,21 @@ impl App {
 
         // MB side: release groups by normalized title (+year), barcodes per release group.
         let mb_albums: HashSet<String> = artist.albums.iter().map(|a| a.id.clone()).collect();
-        let mut by_title: HashMap<String, Vec<(String, Option<i32>)>> = HashMap::new();
+        // (release group id, year, primary type) per title key.
+        let mut by_title: HashMap<String, Vec<(String, Option<i32>, String)>> = HashMap::new();
         for a in &artist.albums {
-            by_title
-                .entry(normalize_title(&a.title))
-                .or_default()
-                .push((a.id.clone(), year_of(a.release_date.as_deref())));
+            for key in title_keys(&a.title) {
+                by_title.entry(key).or_default().push((
+                    a.id.clone(),
+                    year_of(a.release_date.as_deref()),
+                    a.kind.to_ascii_lowercase(),
+                ));
+            }
         }
         let mut by_barcode: HashMap<String, String> = HashMap::new();
-        match self.mb.artist_releases(&mbid).await {
+        // Without the barcode check an unmatched album may still be on MB: in that case
+        // nothing is added and nothing is cached, so the next request retries.
+        let mb_ok = match self.mb.artist_releases(&mbid).await {
             Ok(releases) => {
                 for r in releases {
                     if let (Some(code), Some(rg)) = (r.barcode.as_deref().and_then(normalize_barcode), r.release_group)
@@ -251,18 +257,33 @@ impl App {
                         by_barcode.insert(code, rg);
                     }
                 }
+                true
             }
-            Err(e) => tracing::warn!(%mbid, error = %e, "MB release browse failed; matching by title only"),
-        }
+            Err(e) => {
+                tracing::warn!(%mbid, error = %e, "MB release browse failed; not adding albums this time");
+                false
+            }
+        };
 
+        // Any MB release group sharing a title key counts as a match (remixes, live and
+        // edition qualifiers are stripped, so several can share one): best is same year,
+        // then same primary type, then the first. Erring this way avoids duplicates.
         let match_title = |a: &SrcAlbum| -> Option<String> {
-            let cands = by_title.get(&normalize_title(&a.title))?;
-            let year = year_of(a.release_date.as_deref());
-            if let Some((id, _)) = cands.iter().find(|(_, y)| y.is_some() && *y == year) {
-                return Some(id.clone());
+            let mut cands: Vec<&(String, Option<i32>, String)> =
+                title_keys(&a.title).iter().filter_map(|k| by_title.get(k)).flatten().collect();
+            if cands.is_empty() {
+                return None;
             }
-            // Same title, different year: almost always a reissue of the same release group.
-            if cands.len() == 1 { Some(cands[0].0.clone()) } else { None }
+            cands.dedup_by(|x, y| x.0 == y.0);
+            let year = year_of(a.release_date.as_deref());
+            let (kind, _) = map_record_type(&a.record_type, None);
+            let kind = kind.to_ascii_lowercase();
+            cands
+                .iter()
+                .find(|c| c.1.is_some() && c.1 == year)
+                .or_else(|| cands.iter().find(|c| c.2 == kind))
+                .or(cands.first())
+                .map(|c| c.0.clone())
         };
 
         // Albums kept as synthetic so far (for Deezer/Spotify cross-dedupe).
@@ -315,6 +336,9 @@ impl App {
                     result.covers.entry(rg.clone()).or_default().extend(full.images.iter().map(|i| i.url.clone()));
                     continue;
                 }
+                if !mb_ok {
+                    continue;
+                }
                 // Cross-source dedupe: Deezer wins over Spotify.
                 if let Some(u) = &upc
                     && kept_upcs.contains(u)
@@ -342,6 +366,9 @@ impl App {
 
         result.albums.sort();
         result.albums.dedup();
+        if !mb_ok {
+            return Ok(result);
+        }
         let hash = if result.albums.is_empty() {
             String::new()
         } else {
@@ -355,10 +382,39 @@ impl App {
     }
 }
 
+/// Keys under which two album titles are considered the same: the normalized title
+/// and, for "Main title: subtitle", the main title when it has 2+ words
+/// ("Musique, Volume 1: 1993–2005" ~ "Musique, Vol. 1", but "TRON: Legacy" ≁ "TRON").
+fn title_keys(title: &str) -> Vec<String> {
+    let mut keys = vec![normalize_title(title)];
+    if let Some((main, _)) = title.split_once(':') {
+        let k = normalize_title(main);
+        if k.split(' ').count() >= 2 && !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    keys.retain(|k| !k.is_empty());
+    keys
+}
+
 /// Orders numeric IDs numerically (stable choice among duplicates), others lexically.
 fn numeric_id_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     match (a.parse::<u64>(), b.parse::<u64>()) {
         (Ok(x), Ok(y)) => x.cmp(&y),
         _ => a.cmp(b),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::title_keys;
+
+    #[test]
+    fn title_keys_match_editions_but_not_short_prefixes() {
+        let mb = title_keys("Musique, Volume 1: 1993–2005");
+        assert!(title_keys("Musique, Vol. 1").iter().any(|k| mb.contains(k)));
+        let tron = title_keys("TRON: Legacy");
+        assert!(!title_keys("TRON: Uprising").iter().any(|k| tron.contains(k)));
+        assert_eq!(title_keys("Alive 1997 (Mayan Theater)"), title_keys("Alive 1997"));
     }
 }

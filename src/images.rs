@@ -87,9 +87,18 @@ impl Images {
         let path = self.dir.join(&rel);
         if !path.exists() {
             tokio::fs::create_dir_all(path.parent().unwrap()).await?;
-            let tmp = path.with_extension("part");
+            // Unique temp name: the same image may be downloaded concurrently (e.g. a
+            // background prefetch and a request), and both must not share a temp file.
+            let tmp = path.with_extension(format!("{}.part", uuid::Uuid::new_v4().simple()));
             tokio::fs::write(&tmp, &bytes).await?;
-            tokio::fs::rename(&tmp, &path).await?;
+            if let Err(e) = tokio::fs::rename(&tmp, &path).await {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                // On Windows rename fails when another task already placed the file:
+                // content-addressed, so the existing file is identical.
+                if !path.exists() {
+                    return Err(e.into());
+                }
+            }
         }
         let row = ImageRow {
             hash: hash.clone(),

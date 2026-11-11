@@ -124,7 +124,15 @@ pub fn normalize_title(s: &str) -> String {
         None => out,
     };
     let base = base.strip_prefix("the ").unwrap_or(&base).to_string();
-    base.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+    base.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| match w {
+            "vol" => "volume",
+            "pt" => "part",
+            w => w,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Year part of a `yyyy[-mm[-dd]]` date.
@@ -181,6 +189,8 @@ mod tests {
         assert_eq!(normalize_title("Discovery - Deluxe Edition"), "discovery");
         assert_eq!(normalize_title("Café Tacvba & Friends!"), "cafe tacvba and friends");
         assert_eq!(normalize_title("A - B"), "a b");
+        assert_eq!(normalize_title("Musique, Vol. 1"), "musique volume 1");
+        assert_eq!(normalize_title("Da Funk (Schoolboy remix)"), normalize_title("Da Funk"));
     }
 
     #[test]
