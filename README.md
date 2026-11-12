@@ -156,8 +156,14 @@ Il workflow `.github/workflows/release.yml` pubblica, per ogni versione:
 
 - l'immagine Docker multi-arch (linux/amd64, linux/arm64) su `ghcr.io/nemolo/lidarr-meta-proxy`
   con i tag `X.Y.Z`, `X.Y` e `latest` (le pre-release, es. `0.2.0-rc.1`, solo con il tag esatto);
-- una GitHub Release con note generate dai commit/PR, binari Linux x86_64 e aarch64 (glibc ≥ 2.35)
-  e checksum SHA-256.
+- una GitHub Release con il changelog generato da [git-cliff](https://git-cliff.org) (`cliff.toml`) a partire
+  dai commit dall'ultimo tag, binari Linux x86_64 e aarch64 (glibc ≥ 2.35) e checksum SHA-256.
+
+Il changelog si basa sui [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `perf:`,
+`refactor:`, `docs:`, `test:`, `ci:`/`build:`, `chore:` finiscono nelle rispettive sezioni, `!` o `BREAKING CHANGE`
+li marca come breaking, i commit senza prefisso vanno in "Other". Le note di una release stabile includono anche i
+commit delle sue pre-release. Anteprima in locale: `git cliff --unreleased --tag v0.2.0`.
+Si possono rilasciare solo commit già presenti su `main`.
 
 Per rilasciare: aggiornare `version` in `Cargo.toml` (e `Cargo.lock` con `cargo check`), fare il commit su `main`, poi
 
@@ -167,6 +173,14 @@ git tag v0.2.0 && git push origin v0.2.0
 
 oppure Actions → **Release** → *Run workflow* indicando la versione (il tag viene creato dalla release).
 Il workflow si ferma se la versione non coincide con `Cargo.toml` o se il tag esiste già.
+
+## Pipeline
+
+| Workflow | Quando | Cosa |
+|---|---|---|
+| `ci.yml` | push su qualsiasi branch, pull request | `cargo test`, build Docker |
+| `lint.yml` | solo push su `main` | `cargo fmt --check`, `cargo clippy -D warnings` |
+| `release.yml` | tag `vX.Y.Z` o avvio manuale | test, binari, immagine GHCR, GitHub Release con changelog |
 
 ## Sviluppo
 

@@ -1,7 +1,8 @@
 name: Release
 
-# Publishes a GitHub Release (Linux binaries + checksums) and a multi-arch Docker
-# image on ghcr.io.
+# Publishes a GitHub Release (changelog generated with git-cliff from the
+# Conventional Commits since the previous tag, Linux binaries + checksums) and a
+# multi-arch Docker image on ghcr.io. Only commits on main can be released.
 #
 # Start it by pushing a tag:      git tag v0.2.0 && git push origin v0.2.0
 # or from Actions → Release → Run workflow (the tag is then created by the release).
@@ -32,6 +33,8 @@ jobs:
       image: ${{ steps.v.outputs.image }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - id: v
         name: Resolve and validate version
         shell: bash
@@ -53,6 +56,11 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" != "push" ] && git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
             echo "::error::tag v$version already exists"; exit 1
           fi
+          # Releases are cut from main only (lint runs there).
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main: release only commits merged into main"; exit 1
+          fi
           case "$version" in *-*) pre=true ;; *) pre=false ;; esac
           {
             echo "version=$version"
@@ -66,11 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
   binaries:
@@ -204,6 +208,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+      - name: Generate changelog
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          # Previous release reachable from this commit; stable releases skip
+          # pre-releases so their notes cover everything since the last stable one.
+          exclude=(--exclude "v$VERSION")
+          if [ "$PRERELEASE" = "false" ]; then exclude+=(--exclude "*-*"); fi
+          prev=$(git describe --tags --abbrev=0 --match "v[0-9]*" "${exclude[@]}" HEAD 2>/dev/null || true)
+          range=()
+          if [ -n "$prev" ]; then range=("$prev..HEAD"); fi
+          echo "changes since: ${prev:-first commit}"
+          git cliff --tag "v$VERSION" --strip all "${range[@]}" > changelog.md
+          cat changelog.md
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -217,7 +243,11 @@ jobs:
           IMAGE: ${{ needs.prepare.outputs.image }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
-          cat > notes.md <<EOF
+          {
+            cat changelog.md
+            echo
+          } > notes.md
+          cat >> notes.md <<EOF
           ## Docker
 
           \`\`\`sh
@@ -231,6 +261,6 @@ jobs:
 
           Linux x86_64 and aarch64 (glibc >= 2.35), with SHA-256 checksums.
           EOF
-          args=(--repo "$GITHUB_REPOSITORY" --title "v$VERSION" --notes-file notes.md --generate-notes --target "$GITHUB_SHA")
+          args=(--repo "$GITHUB_REPOSITORY" --title "v$VERSION" --notes-file notes.md --target "$GITHUB_SHA")
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
           gh release create "v$VERSION" dist/* "${args[@]}"

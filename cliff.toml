@@ -1,0 +1,54 @@
+# git-cliff configuration: changelog generated from Conventional Commits.
+# https://git-cliff.org/docs/configuration
+#
+#   git cliff --tag v0.2.0 v0.1.0..HEAD   # notes of the next release
+#   git cliff -o CHANGELOG.md             # full changelog
+
+[changelog]
+header = ""
+body = """
+{% if version -%}
+## {{ version }} ({{ timestamp | date(format="%Y-%m-%d") }})
+{% else -%}
+## Unreleased
+{% endif -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+  {% if commit.breaking %}[**breaking**] {% endif %}\
+  {{ commit.message | split(pat="\n") | first | trim | upper_first }} \
+  ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
+{% endfor -%}
+{% endfor %}
+{%- macro remote_url() -%}
+  https://github.com/Nemolo/lidarr-meta-proxy
+{%- endmacro %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+# Commits not following the convention are listed under "Other" instead of being dropped.
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9].*"
+# Pre-release tags do not split the changelog: their commits roll into the next stable release.
+ignore_tags = "v.*-.*"
+sort_commits = "oldest"
+commit_parsers = [
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^Merge ", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^doc", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  { message = "^(ci|build)", group = "<!-- 6 -->CI and build" },
+  { message = "^(chore|style)", group = "<!-- 7 -->Miscellaneous" },
+  { message = ".*", group = "<!-- 8 -->Other" },
+]
