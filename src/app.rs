@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::{
     config::Config,
-    http::{SourceClient, build_http},
+    http::{Breaker, SourceClient, build_http},
     ids::{Kind, Source, now, synthetic_id},
     images::Images,
     model::*,
@@ -90,10 +90,10 @@ impl App {
             Itunes::new(c, cfg.itunes_url.clone(), cfg.itunes_country.clone(), cfg.itunes_artwork_size)
         });
         let mb_rate = if cfg.mb_interval.is_zero() { None } else { Some((1, cfg.mb_interval)) };
-        let mb = MusicBrainz::new(
-            SourceClient::new("musicbrainz", http.clone(), store.clone(), mb_rate),
-            cfg.musicbrainz_url.clone(),
-        );
+        // Pause after 3 consecutive failures: 10 min, doubling up to 1 h.
+        let mb_client = SourceClient::new("musicbrainz", http.clone(), store.clone(), mb_rate)
+            .with_breaker(Breaker::new(3, Duration::from_secs(600), Duration::from_secs(3600)));
+        let mb = MusicBrainz::new(mb_client, cfg.musicbrainz_url.clone());
         let upstream =
             Upstream::new(cfg.upstream_url.clone(), cfg.upstream_cache_ttl, store.clone(), &ua, cfg.upstream_rate);
         let images = Images::new(store.clone(), cfg.image_dir.clone(), cfg.public_url.clone(), &ua);

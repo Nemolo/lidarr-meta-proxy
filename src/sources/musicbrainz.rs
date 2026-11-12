@@ -105,6 +105,11 @@ impl MusicBrainz {
         Self { client, base }
     }
 
+    /// Reachability as seen by the circuit breaker (`ok`, `paused (…)`, ...).
+    pub fn status(&self) -> String {
+        self.client.status().unwrap_or_else(|| "ok".into())
+    }
+
     async fn get(&self, key: &str, path: &str, query: Vec<(&'static str, String)>, ttl: i64) -> Result<Option<Value>> {
         let url = format!("{}/{}", self.base, path);
         let mut q = query;

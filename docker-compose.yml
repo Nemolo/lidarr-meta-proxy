@@ -11,7 +11,7 @@ services:
     environment:
       # URL under which Lidarr reaches the proxy (image URLs are built from it).
       PUBLIC_URL: http://lidarr-meta:5001
-      MB_USER_AGENT: "lidarr-meta-proxy/0.2 ( you@example.com )"
+      MB_USER_AGENT: "lidarr-meta-proxy/0.3 ( you@example.com )"
       ITUNES_COUNTRY: it
       # Namespace/seed of synthetic UUIDs; set it before the first start and never change it.
       # UUID_NAMESPACE: my-instance-seed

@@ -124,7 +124,18 @@ impl Config {
                     " ( https://github.com/nemolo/lidarr-meta-proxy )"
                 ),
             ),
-            mb_interval: Duration::from_millis(var_or("MB_INTERVAL_MS", "1000").parse().context("MB_INTERVAL_MS")?),
+            mb_interval: {
+                // MusicBrainz allows 1 req/s on average per IP (shared with every other client on
+                // the same network); 1.5 s leaves headroom.
+                let ms: u64 = var_or("MB_INTERVAL_MS", "1500").parse().context("MB_INTERVAL_MS")?;
+                if ms < 1000 {
+                    tracing::warn!(
+                        ms,
+                        "MB_INTERVAL_MS below 1000 breaks MusicBrainz rate limits and may get the IP blocked"
+                    );
+                }
+                Duration::from_millis(ms)
+            },
             reconcile_interval: duration_var("RECONCILE_INTERVAL", "24h")?,
             prefetch_interval: duration_var("PREFETCH_INTERVAL", "1h")?,
             search_mb_lookups: var_or("SEARCH_MB_LOOKUPS", "5").parse().context("SEARCH_MB_LOOKUPS")?,

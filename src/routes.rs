@@ -114,6 +114,7 @@ async fn health(State(app): State<SharedApp>) -> Response {
             "spotify": app.spotify.is_some(),
             "itunes": app.itunes.is_some(),
             "lidarrSetup": lidarr,
+            "musicbrainz": app.mb.status(),
             "version": env!("CARGO_PKG_VERSION"),
         })),
     )

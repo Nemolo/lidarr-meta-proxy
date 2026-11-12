@@ -48,7 +48,7 @@ gli URL delle immagini restituiti a Lidarr sono costruiti da lì.
 | `ITUNES_COUNTRY` | `it` | Store iTunes |
 | `ITUNES_ARTWORK_SIZE` | `3000` | Lato dell'artwork richiesto a iTunes |
 | `MB_USER_AGENT` | `lidarr-meta-proxy/<ver> ( repo url )` | **Mettere un contatto proprio** (policy MusicBrainz) |
-| `MB_INTERVAL_MS` | `1000` | Intervallo minimo tra richieste MusicBrainz (non scendere sotto 1000) |
+| `MB_INTERVAL_MS` | `1500` | Intervallo minimo tra richieste MusicBrainz. Il limite di MusicBrainz è 1 req/s **per IP**, condiviso con ogni altro programma della rete (Picard, beets…): sotto 1000 si rischia il blocco dell'IP |
 | `RECONCILE_INTERVAL` | `24h` | Intervallo del job di riconciliazione (primo giro dopo 5 min) |
 | `PREFETCH_INTERVAL` | `1h` | Intervallo del job di prefetch immagini |
 | `ENRICH_MB_ARTISTS` | `true` | Completa le discografie degli artisti MB |
@@ -101,6 +101,18 @@ mano. L'esito è nei log e in `/health` (`lidarrSetup`: `disabled`, `pending`, `
 Per tornare al server ufficiale togliere queste variabili **e** azzerare il valore
 (`./scripts/set-metadata-source.sh ""`), altrimenti al riavvio successivo il proxy lo reimposta.
 `config.xml` deve essere leggibile dall'utente del container (uid 65532; con i permessi standard `644` lo è).
+
+### MusicBrainz non raggiungibile
+
+Se MusicBrainz non risponde (rete, IP bloccato per troppe richieste, 5xx) per 3 richieste di fila, il proxy smette di
+contattarlo per 10 minuti, poi per pause che raddoppiano fino a 1 ora; alla prima risposta valida torna normale.
+Nel frattempo le chiamate falliscono subito invece di attendere: la ricerca risponde senza i risultati non verificabili,
+la riconciliazione rimanda al giro successivo, l'arricchimento non aggiunge album. Lo stato è in `/health`
+(`"musicbrainz": "ok" | "unknown" | "failing (n): …" | "paused (Ns): …"`) e nei log (`source unreachable, pausing requests`).
+
+Per verificare dall'host se l'IP è bloccato:
+`curl -4 -s -o /dev/null -w '%{http_code}\n' -A "test/1.0 ( tu@example.com )" "https://musicbrainz.org/ws/2/artist?query=test&fmt=json"`
+(`000` = connessione chiusa/bloccata, `503` = limite superato, `200` = ok).
 
 ## Endpoint
 
