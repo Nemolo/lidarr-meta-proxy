@@ -35,6 +35,8 @@ pub struct Config {
     pub search_mb_lookups: usize,
     /// Max number of synthetic results added to a search response per source.
     pub search_limit: usize,
+    /// Time allowed for MusicBrainz checks while answering a search.
+    pub search_timeout: Duration,
     pub enrich_mb_artists: bool,
     /// Namespace of the UUID v5 synthetic IDs (`UUID_NAMESPACE`: a UUID or a seed string).
     pub id_namespace: uuid::Uuid,
@@ -123,6 +125,7 @@ impl Config {
             prefetch_interval: duration_var("PREFETCH_INTERVAL", "1h")?,
             search_mb_lookups: var_or("SEARCH_MB_LOOKUPS", "5").parse().context("SEARCH_MB_LOOKUPS")?,
             search_limit: var_or("SEARCH_LIMIT", "10").parse().context("SEARCH_LIMIT")?,
+            search_timeout: duration_var("SEARCH_TIMEOUT", "4s")?,
             enrich_mb_artists: bool_var("ENRICH_MB_ARTISTS", true)?,
             id_namespace: var("UUID_NAMESPACE")
                 .map(|v| crate::ids::parse_namespace(&v))
@@ -183,6 +186,7 @@ impl Config {
             prefetch_interval: Duration::from_secs(3600),
             search_mb_lookups: 5,
             search_limit: 10,
+            search_timeout: Duration::from_secs(30),
             enrich_mb_artists: true,
             id_namespace: crate::ids::DEFAULT_NAMESPACE,
             lidarr_url: None,

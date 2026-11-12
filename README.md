@@ -53,7 +53,8 @@ gli URL delle immagini restituiti a Lidarr sono costruiti da lì.
 | `PREFETCH_INTERVAL` | `1h` | Intervallo del job di prefetch immagini |
 | `ENRICH_MB_ARTISTS` | `true` | Completa le discografie degli artisti MB |
 | `SEARCH_LIMIT` | `10` | Risultati Deezer/Spotify per ricerca |
-| `SEARCH_MB_LOOKUPS` | `5` | Lookup MB massimi per ricerca (deduplica) |
+| `SEARCH_MB_LOOKUPS` | `5` | Lookup MB massimi per ricerca (deduplica), condivisi tra artisti e album |
+| `SEARCH_TIMEOUT` | `4s` | Tempo massimo dedicato ai controlli MusicBrainz durante una ricerca |
 | `UUID_NAMESPACE` | `6c1da2f0-5b7e-4c3a-9f1e-2d8b0a6c4e51` | Namespace degli UUID v5 sintetici: un UUID, oppure una stringa qualsiasi usata come seed (`uuid5(NAMESPACE_OID, seed)`). **Non cambiarlo dopo il primo avvio** (vedi sotto) |
 | `LIDARR_URL` | — | Lidarr da configurare all'avvio (es. `http://lidarr:8686`), vedi sotto |
 | `LIDARR_API_KEY` | — | Chiave API di Lidarr, oppure… |
@@ -149,9 +150,11 @@ cambia, l'artista compare in `/recent/artist` e Lidarr lo aggiorna.
 **Ricerca e deduplica.** Un risultato Deezer/Spotify che corrisponde a un'entità MB (ID riconciliato, link
 già presente nei risultati upstream, URL-relation MB, per gli album anche barcode) è sostituito dall'entità
 MB, mai restituito come sintetico. Gli album con stesso artista+titolo di un risultato upstream sono scartati.
-I lookup MB sono limitati da `SEARCH_MB_LOOKUPS` (1 req/s); un risultato che non è stato possibile verificare
-entro il budget viene **omesso** (meglio un risultato in meno che un duplicato). I risultati album includono
-sempre release e tracce: Lidarr scarta album di ricerca senza release.
+Upstream, Deezer e Spotify vengono interrogati in parallelo. I controlli MusicBrainz (1 req/s) hanno un budget
+unico per ricerca (`SEARCH_MB_LOOKUPS`) e una scadenza (`SEARCH_TIMEOUT`): un risultato non verificato in tempo
+viene **omesso** da quella risposta (meglio un risultato in meno che un duplicato) e verificato in background; l'esito
+resta in cache, quindi ripetendo la ricerca compare. I risultati album includono sempre release e tracce (Lidarr
+scarta album di ricerca senza release); le copertine non vengono attese ma usate se già in cache.
 
 **Immagini.**
 - Artista sintetico: `poster` da Deezer `picture_xl` (per artisti Spotify: immagine più grande).

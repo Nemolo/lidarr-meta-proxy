@@ -1,6 +1,6 @@
 //! Endpoint logic: artist, album, search and recent updates.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use serde_json::Value;
 
@@ -111,6 +111,11 @@ impl App {
     }
 
     pub async fn synthetic_album(self: &Arc<Self>, id: &str) -> Result<AlbumResource, ApiError> {
+        self.build_synthetic_album(id, true).await
+    }
+
+    /// `wait_images`: download a missing cover before answering (album page) or not (search).
+    async fn build_synthetic_album(self: &Arc<Self>, id: &str, wait_images: bool) -> Result<AlbumResource, ApiError> {
         let row = self.store.get_entity(id).await?.ok_or(ApiError::NotFound)?;
         let a = self.album_payload(&row).await?;
         let row = self.store.get_entity(id).await?.unwrap_or(row);
@@ -124,7 +129,7 @@ impl App {
                 .await
                 .map_err(|e| ApiError::Unavailable(e.to_string()))?;
         }
-        let album = self.album_resource(id, &a, &owner, true).await;
+        let album = self.album_resource(id, &a, &owner, wait_images).await;
         if album.releases.as_ref().map(|r| r.iter().all(|r| r.track_count == 0)).unwrap_or(true) {
             // Lidarr drops releases without tracks; an album without tracks is useless.
             tracing::warn!(%id, "synthetic album has no tracks");
@@ -133,14 +138,28 @@ impl App {
     }
 
     // ------------------------------------------------------------------ search
+    //
+    // Latency: upstream and Deezer/Spotify are queried in parallel; MusicBrainz checks
+    // (1 req/s) share one budget and a deadline per request. Hits not verified in time
+    // are left out of this answer and verified in background, so the cached results
+    // make the next identical search complete.
+
+    fn search_budget(&self) -> SearchBudget {
+        SearchBudget {
+            deadline: Instant::now() + self.cfg.search_timeout,
+            lookups: self.cfg.search_mb_lookups,
+            skipped: false,
+        }
+    }
 
     /// MB artist ID for a Deezer/Spotify artist: reconciled entity, upstream links
-    /// already in the response, or MB URL relation (within the lookup budget).
+    /// already in the response, or MB URL relation (within the budget).
+    /// `None` = not verifiable now.
     async fn mb_artist_for(
         &self,
         a: &SrcArtist,
         upstream: &[ArtistResource],
-        budget: &mut usize,
+        budget: &mut SearchBudget,
     ) -> Option<Option<String>> {
         let sid = synthetic_id(a.source, Kind::Artist, &a.id);
         if let Ok(Some(row)) = self.store.get_entity(&sid).await
@@ -153,11 +172,10 @@ impl App {
                 return Some(Some(u.id.clone()));
             }
         }
-        if *budget == 0 {
+        if !budget.take() {
             return None;
         }
-        *budget -= 1;
-        match self.mb.url_rels(&a.link, self.mb_missing_ttl()).await {
+        match budget.within(self.mb.url_rels(&a.link, self.mb_missing_ttl())).await? {
             Ok(rels) => Some(rels.artists.into_iter().next()),
             Err(e) => {
                 tracing::debug!(error = %e, "MB url lookup failed");
@@ -166,13 +184,105 @@ impl App {
         }
     }
 
+    /// MB release group for a source album: reconciled entity, URL relation, barcode.
+    async fn mb_album_for(&self, a: &SrcAlbum, budget: &mut SearchBudget) -> Option<Option<String>> {
+        let sid = synthetic_id(a.source, Kind::Album, &a.id);
+        if let Ok(Some(row)) = self.store.get_entity(&sid).await
+            && row.mbid.is_some()
+        {
+            return Some(row.mbid);
+        }
+        if !budget.take() {
+            return None;
+        }
+        let ttl = self.mb_missing_ttl();
+        let mut releases = match budget.within(self.mb.url_rels(&a.link, ttl)).await? {
+            Ok(r) => r.releases,
+            Err(_) => return None,
+        };
+        if releases.is_empty() {
+            let upc = match &a.upc {
+                Some(u) => Some(u.clone()),
+                None => self.album_details(a.source, &a.id).await.ok().flatten().and_then(|f| f.upc),
+            };
+            if let Some(upc) = upc {
+                if !budget.take() {
+                    return None;
+                }
+                releases = budget.within(self.mb.releases_by_barcode(&upc, ttl)).await?.ok()?;
+            }
+        }
+        let Some(rel) = releases.first() else { return Some(None) };
+        // Release -> release group.
+        if !budget.take() {
+            return None;
+        }
+        match budget.within(self.mb.release(rel)).await? {
+            Ok(Some(r)) => Some(r.release_group),
+            _ => None,
+        }
+    }
+
+    async fn source_artist_hits(&self, query: &str) -> Vec<SrcArtist> {
+        let limit = self.cfg.search_limit;
+        let deezer = async {
+            match &self.deezer {
+                Some(d) => d.search_artists(query, limit).await.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "deezer search failed");
+                    vec![]
+                }),
+                None => vec![],
+            }
+        };
+        let spotify = async {
+            match &self.spotify {
+                Some(s) => s.search_artists(query, limit).await.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "spotify search failed");
+                    vec![]
+                }),
+                None => vec![],
+            }
+        };
+        let (mut a, b) = tokio::join!(deezer, spotify);
+        a.extend(b);
+        a
+    }
+
+    async fn source_album_hits(&self, query: &str, artist: Option<&str>) -> Vec<SrcAlbum> {
+        let limit = self.cfg.search_limit.min(5);
+        let deezer = async {
+            match &self.deezer {
+                Some(d) => d.search_albums(query, artist, limit).await.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "deezer album search failed");
+                    vec![]
+                }),
+                None => vec![],
+            }
+        };
+        let spotify = async {
+            match &self.spotify {
+                Some(s) => s.search_albums(query, artist, limit).await.unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "spotify album search failed");
+                    vec![]
+                }),
+                None => vec![],
+            }
+        };
+        let (mut a, b) = tokio::join!(deezer, spotify);
+        a.extend(b);
+        a
+    }
+
     pub async fn search_artists(self: &Arc<Self>, query: &str) -> Result<Vec<ArtistResource>, ApiError> {
         let q = vec![("type".to_string(), "artist".to_string()), ("query".to_string(), query.to_string())];
-        let mut results: Vec<ArtistResource> = self.upstream_list("search", &q).await?;
+        let mut budget = self.search_budget();
+        let (upstream, hits) =
+            tokio::join!(self.upstream_list::<ArtistResource>("search", &q), self.source_artist_hits(query));
+        let mut results = upstream?;
         for r in &mut results {
             self.mark_old_ids_artist(r).await;
         }
-        let extra = self.synthetic_artist_hits(query, &results).await;
+        let extra = self.synthetic_artist_hits(hits, &results, &mut budget).await;
         results.extend(extra);
         Ok(results)
     }
@@ -185,35 +295,26 @@ impl App {
         }
     }
 
-    async fn synthetic_artist_hits(self: &Arc<Self>, query: &str, upstream: &[ArtistResource]) -> Vec<ArtistResource> {
-        let limit = self.cfg.search_limit;
-        let mut hits: Vec<SrcArtist> = vec![];
-        if let Some(d) = &self.deezer {
-            match d.search_artists(query, limit).await {
-                Ok(h) => hits.extend(h),
-                Err(e) => tracing::warn!(error = %e, "deezer search failed"),
-            }
+    async fn synthetic_artist_hits(
+        self: &Arc<Self>,
+        hits: Vec<SrcArtist>,
+        upstream: &[ArtistResource],
+        budget: &mut SearchBudget,
+    ) -> Vec<ArtistResource> {
+        enum Hit {
+            Mb(String),
+            Synthetic(SrcArtist),
         }
-        if let Some(s) = &self.spotify {
-            match s.search_artists(query, limit).await {
-                Ok(h) => hits.extend(h),
-                Err(e) => tracing::warn!(error = %e, "spotify search failed"),
-            }
-        }
-        let mut budget = self.cfg.search_mb_lookups;
         let mut seen_mb: HashSet<String> = upstream.iter().map(|a| a.id.clone()).collect();
         let mut names: HashSet<String> = HashSet::new();
-        let mut out = vec![];
+        let mut verified = vec![];
+        let mut pending = vec![];
         for hit in hits {
-            match self.mb_artist_for(&hit, upstream, &mut budget).await {
+            match self.mb_artist_for(&hit, upstream, budget).await {
                 // On MusicBrainz: never return it as synthetic.
                 Some(Some(mbid)) => {
-                    if seen_mb.insert(mbid.clone())
-                        && let Ok(Some(mut mb)) = self.upstream_artist(&mbid).await
-                    {
-                        mb.albums.clear();
-                        self.mark_old_ids_artist(&mut mb).await;
-                        out.push(mb);
+                    if seen_mb.insert(mbid.clone()) {
+                        verified.push(Hit::Mb(mbid));
                     }
                 }
                 Some(None) => {
@@ -223,16 +324,44 @@ impl App {
                         continue;
                     }
                     names.insert(n);
-                    match self.save_artist(&hit).await {
-                        Ok(id) => out.push(self.artist_resource(&id, &hit, false).await),
-                        Err(e) => tracing::warn!(error = %e, "failed to store artist"),
-                    }
+                    verified.push(Hit::Synthetic(hit));
                 }
-                // Not verifiable within budget: omitted rather than risking a duplicate.
-                None => {}
+                // Not verifiable now: omitted rather than risking a duplicate.
+                None => pending.push(hit),
             }
         }
-        out
+        if !pending.is_empty() {
+            tracing::debug!(pending = pending.len(), "artist hits left for background verification");
+            let app = self.clone();
+            tokio::spawn(async move {
+                let mut b = SearchBudget::background();
+                for hit in pending {
+                    app.mb_artist_for(&hit, &[], &mut b).await;
+                }
+            });
+        }
+        // Build the answers concurrently (upstream fetches, DB writes).
+        let built = futures::future::join_all(verified.into_iter().map(|h| async move {
+            match h {
+                Hit::Mb(mbid) => match self.upstream_artist(&mbid).await {
+                    Ok(Some(mut mb)) => {
+                        mb.albums.clear();
+                        self.mark_old_ids_artist(&mut mb).await;
+                        Some(mb)
+                    }
+                    _ => None,
+                },
+                Hit::Synthetic(hit) => match self.save_artist(&hit).await {
+                    Ok(id) => Some(self.artist_resource(&id, &hit, false).await),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to store artist");
+                        None
+                    }
+                },
+            }
+        }))
+        .await;
+        built.into_iter().flatten().collect()
     }
 
     pub async fn search_albums(
@@ -246,34 +375,29 @@ impl App {
         if include_tracks {
             q.push(("includeTracks".to_string(), "1".to_string()));
         }
-        let mut results: Vec<AlbumResource> = self.upstream_list("search", &q).await?;
+        let mut budget = self.search_budget();
+        let (upstream, hits) = tokio::join!(
+            self.upstream_list::<AlbumResource>("search", &q),
+            self.source_album_hits(query, Some(artist))
+        );
+        let mut results = upstream?;
         for r in &mut results {
             self.album_old_ids(r).await;
         }
-        let extra = self.synthetic_album_hits(query, Some(artist), &results).await;
+        let extra = self.synthetic_album_hits(hits, &results, &mut budget).await;
         results.extend(extra);
         Ok(results)
     }
 
     async fn synthetic_album_hits(
         self: &Arc<Self>,
-        query: &str,
-        artist: Option<&str>,
+        hits: Vec<SrcAlbum>,
         upstream: &[AlbumResource],
+        budget: &mut SearchBudget,
     ) -> Vec<AlbumResource> {
-        let limit = self.cfg.search_limit.min(5);
-        let mut hits: Vec<SrcAlbum> = vec![];
-        if let Some(d) = &self.deezer {
-            match d.search_albums(query, artist, limit).await {
-                Ok(h) => hits.extend(h),
-                Err(e) => tracing::warn!(error = %e, "deezer album search failed"),
-            }
-        }
-        if let Some(s) = &self.spotify {
-            match s.search_albums(query, artist, limit).await {
-                Ok(h) => hits.extend(h),
-                Err(e) => tracing::warn!(error = %e, "spotify album search failed"),
-            }
+        enum Hit {
+            Mb(String),
+            Synthetic(Box<SrcAlbum>),
         }
         // Upstream albums by (artist name, title): a source hit matching one is a duplicate.
         let upstream_keys: HashSet<(String, String)> = upstream
@@ -285,85 +409,76 @@ impl App {
             .collect();
         let mut seen_mb: HashSet<String> = upstream.iter().map(|a| a.id.clone()).collect();
         let mut seen_keys: HashSet<(String, String)> = HashSet::new();
-        let mut budget = self.cfg.search_mb_lookups;
-        let mut out = vec![];
+        let mut verified = vec![];
+        let mut pending = vec![];
         for hit in hits {
             let key = (normalize_title(hit.artist_name.as_deref().unwrap_or("")), normalize_title(&hit.title));
             if upstream_keys.contains(&key) || !seen_keys.insert(key) {
                 continue;
             }
-            match self.mb_album_for(&hit, &mut budget).await {
+            match self.mb_album_for(&hit, budget).await {
                 Some(Some(rg)) => {
-                    if seen_mb.insert(rg.clone())
-                        && let Ok(Some(mb)) = self.upstream_album(&rg).await
-                    {
-                        out.push(self.finish_mb_album(mb).await);
+                    if seen_mb.insert(rg.clone()) {
+                        verified.push(Hit::Mb(rg));
                     }
                 }
-                Some(None) => {
+                Some(None) => verified.push(Hit::Synthetic(Box::new(hit))),
+                None => pending.push(hit),
+            }
+        }
+        if !pending.is_empty() {
+            tracing::debug!(pending = pending.len(), "album hits left for background verification");
+            let app = self.clone();
+            tokio::spawn(async move {
+                let mut b = SearchBudget::background();
+                for hit in pending {
+                    app.mb_album_for(&hit, &mut b).await;
+                }
+            });
+        }
+        let built = futures::future::join_all(verified.into_iter().map(|h| async move {
+            match h {
+                Hit::Mb(rg) => match self.upstream_album(&rg).await {
+                    Ok(Some(mb)) => Some(self.finish_mb_album(mb).await),
+                    _ => None,
+                },
+                Hit::Synthetic(hit) => {
                     let id = match self.save_album(&hit, None).await {
                         Ok(id) => id,
                         Err(e) => {
                             tracing::warn!(error = %e, "failed to store album");
-                            continue;
+                            return None;
                         }
                     };
                     // Search results always need tracks: Lidarr drops albums without releases.
-                    match self.synthetic_album(&id).await {
+                    // Covers are not awaited here (cached ones are used, others load in background).
+                    match self.build_synthetic_album(&id, false).await {
                         Ok(a) if a.releases.as_ref().map(|r| r.iter().any(|r| r.track_count > 0)).unwrap_or(false) => {
-                            out.push(a)
+                            Some(a)
                         }
-                        Ok(_) => {}
-                        Err(e) => tracing::debug!(error = ?e, "synthetic album build failed"),
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::debug!(error = ?e, "synthetic album build failed");
+                            None
+                        }
                     }
                 }
-                None => {}
             }
-        }
-        out
-    }
-
-    /// MB release group for a source album: reconciled entity, URL relation, barcode.
-    async fn mb_album_for(&self, a: &SrcAlbum, budget: &mut usize) -> Option<Option<String>> {
-        let sid = synthetic_id(a.source, Kind::Album, &a.id);
-        if let Ok(Some(row)) = self.store.get_entity(&sid).await
-            && row.mbid.is_some()
-        {
-            return Some(row.mbid);
-        }
-        if *budget == 0 {
-            return None;
-        }
-        *budget -= 1;
-        let ttl = self.mb_missing_ttl();
-        let mut releases = match self.mb.url_rels(&a.link, ttl).await {
-            Ok(r) => r.releases,
-            Err(_) => return None,
-        };
-        if releases.is_empty() {
-            let upc = match &a.upc {
-                Some(u) => Some(u.clone()),
-                None => self.album_details(a.source, &a.id).await.ok().flatten().and_then(|f| f.upc),
-            };
-            if let Some(upc) = upc {
-                if *budget == 0 {
-                    return None;
-                }
-                *budget -= 1;
-                releases = self.mb.releases_by_barcode(&upc, ttl).await.ok()?;
-            }
-        }
-        let Some(rel) = releases.first() else { return Some(None) };
-        // Release -> release group (one more lookup, cached).
-        match self.mb.release(rel).await {
-            Ok(Some(r)) => Some(r.release_group),
-            _ => None,
-        }
+        }))
+        .await;
+        built.into_iter().flatten().collect()
     }
 
     pub async fn search_all(self: &Arc<Self>, query: &str) -> Result<Vec<EntityResource>, ApiError> {
         let q = vec![("type".to_string(), "all".to_string()), ("query".to_string(), query.to_string())];
-        let mut results: Vec<EntityResource> = self.upstream_list("search", &q).await?;
+        // One budget for artists and albums: MusicBrainz is the bottleneck (1 req/s).
+        let mut budget = self.search_budget();
+        let (upstream, artist_hits, album_hits) = tokio::join!(
+            self.upstream_list::<EntityResource>("search", &q),
+            self.source_artist_hits(query),
+            self.source_album_hits(query, None)
+        );
+        let mut results = upstream?;
         let up_artists: Vec<ArtistResource> = results.iter().filter_map(|e| e.artist.clone()).collect();
         let up_albums: Vec<AlbumResource> = results.iter().filter_map(|e| e.album.clone()).collect();
         for e in &mut results {
@@ -376,17 +491,20 @@ impl App {
         }
         let min_score = results.iter().map(|e| e.score).min().unwrap_or(100);
         let score = (min_score - 1).max(0);
-        for a in self.synthetic_artist_hits(query, &up_artists).await {
+        for a in self.synthetic_artist_hits(artist_hits, &up_artists, &mut budget).await {
             if results.iter().any(|e| e.artist.as_ref().map(|x| x.id == a.id).unwrap_or(false)) {
                 continue;
             }
             results.push(EntityResource { score, artist: Some(a), ..Default::default() });
         }
-        for a in self.synthetic_album_hits(query, None, &up_albums).await {
+        for a in self.synthetic_album_hits(album_hits, &up_albums, &mut budget).await {
             if results.iter().any(|e| e.album.as_ref().map(|x| x.id == a.id).unwrap_or(false)) {
                 continue;
             }
             results.push(EntityResource { score, album: Some(a), ..Default::default() });
+        }
+        if budget.skipped {
+            tracing::info!(query, "search answered before all MusicBrainz checks; remaining ones run in background");
         }
         Ok(results)
     }
@@ -431,6 +549,41 @@ impl App {
         }
         res.count = res.items.len() as i64;
         Ok(res)
+    }
+}
+
+/// MusicBrainz lookups allowed while answering one search.
+struct SearchBudget {
+    deadline: Instant,
+    lookups: usize,
+    /// Some check was skipped for lack of budget/time.
+    skipped: bool,
+}
+
+impl SearchBudget {
+    /// Budget for verifications continued after the answer was sent.
+    fn background() -> Self {
+        Self { deadline: Instant::now() + std::time::Duration::from_secs(300), lookups: 50, skipped: false }
+    }
+
+    /// Runs a lookup, giving up (`None`) when the deadline passes.
+    async fn within<F: std::future::Future>(&mut self, f: F) -> Option<F::Output> {
+        match tokio::time::timeout_at(self.deadline.into(), f).await {
+            Ok(v) => Some(v),
+            Err(_) => {
+                self.skipped = true;
+                None
+            }
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        if self.lookups == 0 || Instant::now() >= self.deadline {
+            self.skipped = true;
+            return false;
+        }
+        self.lookups -= 1;
+        true
     }
 }
 

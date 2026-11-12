@@ -550,3 +550,32 @@ async fn enrichment_adds_nothing_when_musicbrainz_is_unavailable() {
     let (_, recent) = h.get("/recent/artist?since=0").await;
     assert!(!recent["items"].as_array().unwrap().iter().any(|i| i == MB_ARTIST));
 }
+
+#[tokio::test]
+async fn slow_musicbrainz_does_not_block_search() {
+    // MusicBrainz answers after 1.5 s; the search may wait 300 ms.
+    let h = Harness::with(|c| c.search_timeout = std::time::Duration::from_millis(300)).await;
+    h.mock_empty_upstream_search().await;
+    h.mock_deezer_indie().await;
+    h.mock_json(
+        "/deezer/search/artist",
+        json!({"data": [{"id": 27, "name": "Indie Person", "link": "https://www.deezer.com/artist/27"}]}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/mb/url"))
+        .respond_with(ResponseTemplate::new(404).set_delay(std::time::Duration::from_millis(1500)))
+        .mount(&h.server)
+        .await;
+
+    let start = std::time::Instant::now();
+    let (status, v) = h.get("/search?type=artist&query=indie").await;
+    assert_eq!(status, 200);
+    assert!(start.elapsed() < std::time::Duration::from_millis(1200), "search waited for MB: {:?}", start.elapsed());
+    assert_eq!(v, json!([]), "unverified hit is not returned as synthetic");
+
+    // Verification continues in background and is cached: the same search now has the hit.
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    let (_, v) = h.get("/search?type=artist&query=indie").await;
+    assert_eq!(v[0]["id"], synthetic_id(Source::Deezer, Kind::Artist, "27").as_str());
+}
