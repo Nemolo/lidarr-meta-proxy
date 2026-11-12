@@ -1,10 +1,8 @@
 name: CI
 
-# Tests and Docker build on every branch and pull request.
+# Tests and Docker build on pull requests only.
 # Lint (rustfmt + clippy) lives in lint.yml and runs only on main.
 on:
-  push:
-    branches: ["**"]
   pull_request:
 
 jobs:
