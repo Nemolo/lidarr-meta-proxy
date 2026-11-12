@@ -54,7 +54,9 @@ gli URL delle immagini restituiti a Lidarr sono costruiti da lì.
 | `ENRICH_MB_ARTISTS` | `true` | Completa le discografie degli artisti MB |
 | `SEARCH_LIMIT` | `10` | Risultati Deezer/Spotify per ricerca |
 | `SEARCH_MB_LOOKUPS` | `5` | Lookup MB massimi per ricerca (deduplica), condivisi tra artisti e album |
-| `SEARCH_TIMEOUT` | `4s` | Tempo massimo dedicato ai controlli MusicBrainz durante una ricerca |
+| `SEARCH_TIMEOUT` | `8s` | Tempo massimo dedicato ai controlli MusicBrainz durante una ricerca |
+| `SEARCH_DEBOUNCE_MS` | `500` | Attesa prima di eseguire una ricerca dalla barra; una query successiva correlata la annulla |
+| `UPSTREAM_RATE` | `5` | Richieste al secondo massime verso il server upstream (solo quelle non in cache; `0` = nessun limite) |
 | `UUID_NAMESPACE` | `6c1da2f0-5b7e-4c3a-9f1e-2d8b0a6c4e51` | Namespace degli UUID v5 sintetici: un UUID, oppure una stringa qualsiasi usata come seed (`uuid5(NAMESPACE_OID, seed)`). **Non cambiarlo dopo il primo avvio** (vedi sotto) |
 | `LIDARR_URL` | — | Lidarr da configurare all'avvio (es. `http://lidarr:8686`), vedi sotto |
 | `LIDARR_API_KEY` | — | Chiave API di Lidarr, oppure… |
@@ -150,6 +152,16 @@ cambia, l'artista compare in `/recent/artist` e Lidarr lo aggiorna.
 **Ricerca e deduplica.** Un risultato Deezer/Spotify che corrisponde a un'entità MB (ID riconciliato, link
 già presente nei risultati upstream, URL-relation MB, per gli album anche barcode) è sostituito dall'entità
 MB, mai restituito come sintetico. Gli album con stesso artista+titolo di un risultato upstream sono scartati.
+Mentre si digita, Lidarr (che ha già un debounce di 300 ms) può inviare anche le query parziali ("que", "quee",
+"queen"). Il proxy attende `SEARCH_DEBOUNCE_MS` prima di eseguire una ricerca generica o per artista: se nel frattempo
+arriva una query che estende o accorcia quella in attesa, la vecchia risponde subito vuota senza interrogare upstream,
+Deezer o MusicBrainz, e le sue eventuali verifiche in background si fermano. Query non correlate (altri utenti, ricerche
+interne) non si annullano a vicenda; le ricerche di album (usate anche dall'import) non hanno debounce. Le richieste
+che arrivano davvero a upstream sono limitate a `UPSTREAM_RATE` al secondo.
+
+Si può cercare anche incollando un MBID o un UUID sintetico senza prefisso: il proxy lo cerca come artista e poi
+come release group (Lidarr da solo riconosce solo `lidarr:<id>`).
+
 Upstream, Deezer e Spotify vengono interrogati in parallelo. I controlli MusicBrainz (1 req/s) hanno un budget
 unico per ricerca (`SEARCH_MB_LOOKUPS`) e una scadenza (`SEARCH_TIMEOUT`): un risultato non verificato in tempo
 viene **omesso** da quella risposta (meglio un risultato in meno che un duplicato) e verificato in background; l'esito

@@ -29,6 +29,8 @@ pub struct App {
     pub mb: MusicBrainz,
     pub images: Images,
     pub lidarr_setup: Option<Arc<crate::lidarr::LidarrSetup>>,
+    /// Recent interactive searches (sequence, normalized query), newest last, for debouncing.
+    pub recent_searches: std::sync::Mutex<std::collections::VecDeque<(u64, String)>>,
 }
 
 pub type SharedApp = Arc<App>;
@@ -92,11 +94,23 @@ impl App {
             SourceClient::new("musicbrainz", http.clone(), store.clone(), mb_rate),
             cfg.musicbrainz_url.clone(),
         );
-        let upstream = Upstream::new(cfg.upstream_url.clone(), cfg.upstream_cache_ttl, store.clone(), &ua);
+        let upstream =
+            Upstream::new(cfg.upstream_url.clone(), cfg.upstream_cache_ttl, store.clone(), &ua, cfg.upstream_rate);
         let images = Images::new(store.clone(), cfg.image_dir.clone(), cfg.public_url.clone(), &ua);
         let lidarr_setup =
             cfg.lidarr_setup()?.map(|(url, key, target)| Arc::new(crate::lidarr::LidarrSetup::new(url, key, target)));
-        Ok(Self { cfg, store, upstream, deezer, spotify, itunes, mb, images, lidarr_setup })
+        Ok(Self {
+            cfg,
+            store,
+            upstream,
+            deezer,
+            spotify,
+            itunes,
+            mb,
+            images,
+            lidarr_setup,
+            recent_searches: Default::default(),
+        })
     }
 
     pub fn source_ttl(&self) -> i64 {

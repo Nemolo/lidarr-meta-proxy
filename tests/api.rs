@@ -579,3 +579,72 @@ async fn slow_musicbrainz_does_not_block_search() {
     let (_, v) = h.get("/search?type=artist&query=indie").await;
     assert_eq!(v[0]["id"], synthetic_id(Source::Deezer, Kind::Artist, "27").as_str());
 }
+
+#[tokio::test]
+async fn typing_supersedes_older_related_searches() {
+    use wiremock::matchers::query_param;
+    let h = Harness::with(|c| c.search_debounce = std::time::Duration::from_millis(300)).await;
+    // "que" must never reach upstream: "queen" (typed 50 ms later) supersedes it.
+    Mock::given(method("GET"))
+        .and(path("/upstream/search"))
+        .and(query_param("query", "que"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(0)
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/upstream/search"))
+        .and(query_param("query", "queen"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"score": 100, "artist": {"id": MB_ARTIST, "artistname": "Queen"}}])),
+        )
+        .expect(1)
+        .mount(&h.server)
+        .await;
+    // An unrelated search running at the same time (another user) is not affected.
+    Mock::given(method("GET"))
+        .and(path("/upstream/search"))
+        .and(query_param("query", "abba"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&h.server)
+        .await;
+
+    let first = h.get("/search?type=all&query=que");
+    let second = async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        h.get("/search?type=all&query=queen").await
+    };
+    let third = async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        h.get("/search?type=all&query=abba").await
+    };
+    let ((s1, v1), (s2, v2), (s3, _)) = tokio::join!(first, second, third);
+    assert_eq!((s1, s2, s3), (200, 200, 200));
+    assert_eq!(v1, json!([]));
+    assert_eq!(v2[0]["artist"]["artistName"], "Queen");
+}
+
+#[tokio::test]
+async fn bare_mbid_search_finds_artist_or_release_group() {
+    let h = Harness::new().await;
+    h.mock_mb_artist_with_deezer().await;
+    h.mock_json(
+        &format!("/upstream/album/{MB_RG_FIRST}"),
+        json!({"id": MB_RG_FIRST, "artistid": MB_ARTIST, "title": "First Album", "type": "Album",
+               "artists": [{"id": MB_ARTIST, "artistname": "Known Band"}], "releases": []}),
+    )
+    .await;
+    // Artist ID.
+    let (status, v) = h.get(&format!("/search?type=all&query={MB_ARTIST}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(v[0]["artist"]["id"], MB_ARTIST);
+    // Release-group ID: /artist/{id} is 404 upstream, /album/{id} answers.
+    let (status, v) = h.get(&format!("/search?type=all&query={MB_RG_FIRST}")).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v[0]["album"]["id"], MB_RG_FIRST);
+    // Unknown ID: empty, not an error.
+    let (status, v) = h.get("/search?type=all&query=99999999-9999-4999-8999-999999999999").await;
+    assert_eq!((status, v), (200, json!([])));
+}

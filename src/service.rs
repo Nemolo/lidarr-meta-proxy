@@ -144,11 +144,66 @@ impl App {
     // are left out of this answer and verified in background, so the cached results
     // make the next identical search complete.
 
-    fn search_budget(&self) -> SearchBudget {
+    fn search_budget(&self, search: Option<(u64, String)>) -> SearchBudget {
         SearchBudget {
             deadline: Instant::now() + self.cfg.search_timeout,
             lookups: self.cfg.search_mb_lookups,
             skipped: false,
+            search,
+        }
+    }
+
+    /// Registers an interactive search (search box), waits `SEARCH_DEBOUNCE_MS`,
+    /// and returns its identity, or `None` if a newer related query (the user kept
+    /// typing or deleting) arrived meanwhile: then nothing is fetched at all.
+    async fn debounce_search(&self, query: &str) -> Option<(u64, String)> {
+        let q = query.trim().to_lowercase();
+        let seq = {
+            let mut recent = self.recent_searches.lock().unwrap();
+            let seq = recent.back().map(|(s, _)| s + 1).unwrap_or(1);
+            recent.push_back((seq, q.clone()));
+            while recent.len() > 64 {
+                recent.pop_front();
+            }
+            seq
+        };
+        if !self.cfg.search_debounce.is_zero() {
+            tokio::time::sleep(self.cfg.search_debounce).await;
+        }
+        let search = Some((seq, q));
+        if self.search_superseded(&search) {
+            tracing::debug!(query = %query, "search superseded while typing, skipped");
+            return None;
+        }
+        search
+    }
+
+    /// True if a newer search was started whose query extends or shortens this one.
+    /// Unrelated queries (another user, an internal lookup) never supersede.
+    fn search_superseded(&self, search: &Option<(u64, String)>) -> bool {
+        let Some((seq, q)) = search else { return false };
+        let recent = self.recent_searches.lock().unwrap();
+        recent
+            .iter()
+            .rev()
+            .take_while(|(s, _)| s > seq)
+            .any(|(_, other)| other.starts_with(q.as_str()) || q.starts_with(other.as_str()))
+    }
+
+    /// Search by bare MBID/UUID (Lidarr itself handles only `lidarr:<id>`).
+    async fn search_by_id(self: &Arc<Self>, id: &str) -> Result<Vec<EntityResource>, ApiError> {
+        match self.get_artist(id).await {
+            Ok(mut a) => {
+                a.albums.clear();
+                return Ok(vec![EntityResource { score: 100, artist: Some(a), ..Default::default() }]);
+            }
+            Err(ApiError::NotFound) | Err(ApiError::BadRequest) => {}
+            Err(e) => return Err(e),
+        }
+        match self.get_album(id).await {
+            Ok(a) => Ok(vec![EntityResource { score: 100, album: Some(a), ..Default::default() }]),
+            Err(ApiError::NotFound) | Err(ApiError::BadRequest) => Ok(vec![]),
+            Err(e) => Err(e),
         }
     }
 
@@ -274,8 +329,12 @@ impl App {
     }
 
     pub async fn search_artists(self: &Arc<Self>, query: &str) -> Result<Vec<ArtistResource>, ApiError> {
+        if let Some(id) = parse_uuid(query) {
+            return Ok(self.search_by_id(&id).await?.into_iter().filter_map(|e| e.artist).collect());
+        }
+        let Some(search) = self.debounce_search(query).await else { return Ok(vec![]) };
         let q = vec![("type".to_string(), "artist".to_string()), ("query".to_string(), query.to_string())];
-        let mut budget = self.search_budget();
+        let mut budget = self.search_budget(Some(search));
         let (upstream, hits) =
             tokio::join!(self.upstream_list::<ArtistResource>("search", &q), self.source_artist_hits(query));
         let mut results = upstream?;
@@ -310,6 +369,10 @@ impl App {
         let mut verified = vec![];
         let mut pending = vec![];
         for hit in hits {
+            if self.search_superseded(&budget.search) {
+                // The user typed further: nobody will read this answer.
+                return vec![];
+            }
             match self.mb_artist_for(&hit, upstream, budget).await {
                 // On MusicBrainz: never return it as synthetic.
                 Some(Some(mbid)) => {
@@ -333,9 +396,13 @@ impl App {
         if !pending.is_empty() {
             tracing::debug!(pending = pending.len(), "artist hits left for background verification");
             let app = self.clone();
+            let search = budget.search.clone();
             tokio::spawn(async move {
                 let mut b = SearchBudget::background();
                 for hit in pending {
+                    if app.search_superseded(&search) {
+                        break;
+                    }
                     app.mb_artist_for(&hit, &[], &mut b).await;
                 }
             });
@@ -375,7 +442,8 @@ impl App {
         if include_tracks {
             q.push(("includeTracks".to_string(), "1".to_string()));
         }
-        let mut budget = self.search_budget();
+        // Album searches also come from Lidarr internals (import matching): no debounce.
+        let mut budget = self.search_budget(None);
         let (upstream, hits) = tokio::join!(
             self.upstream_list::<AlbumResource>("search", &q),
             self.source_album_hits(query, Some(artist))
@@ -416,6 +484,9 @@ impl App {
             if upstream_keys.contains(&key) || !seen_keys.insert(key) {
                 continue;
             }
+            if self.search_superseded(&budget.search) {
+                return vec![];
+            }
             match self.mb_album_for(&hit, budget).await {
                 Some(Some(rg)) => {
                     if seen_mb.insert(rg.clone()) {
@@ -429,9 +500,13 @@ impl App {
         if !pending.is_empty() {
             tracing::debug!(pending = pending.len(), "album hits left for background verification");
             let app = self.clone();
+            let search = budget.search.clone();
             tokio::spawn(async move {
                 let mut b = SearchBudget::background();
                 for hit in pending {
+                    if app.search_superseded(&search) {
+                        break;
+                    }
                     app.mb_album_for(&hit, &mut b).await;
                 }
             });
@@ -470,9 +545,13 @@ impl App {
     }
 
     pub async fn search_all(self: &Arc<Self>, query: &str) -> Result<Vec<EntityResource>, ApiError> {
+        if let Some(id) = parse_uuid(query) {
+            return self.search_by_id(&id).await;
+        }
+        let Some(search) = self.debounce_search(query).await else { return Ok(vec![]) };
         let q = vec![("type".to_string(), "all".to_string()), ("query".to_string(), query.to_string())];
         // One budget for artists and albums: MusicBrainz is the bottleneck (1 req/s).
-        let mut budget = self.search_budget();
+        let mut budget = self.search_budget(Some(search));
         let (upstream, artist_hits, album_hits) = tokio::join!(
             self.upstream_list::<EntityResource>("search", &q),
             self.source_artist_hits(query),
@@ -558,12 +637,19 @@ struct SearchBudget {
     lookups: usize,
     /// Some check was skipped for lack of budget/time.
     skipped: bool,
+    /// Interactive search this budget belongs to (for supersession checks).
+    search: Option<(u64, String)>,
 }
 
 impl SearchBudget {
     /// Budget for verifications continued after the answer was sent.
     fn background() -> Self {
-        Self { deadline: Instant::now() + std::time::Duration::from_secs(300), lookups: 50, skipped: false }
+        Self {
+            deadline: Instant::now() + std::time::Duration::from_secs(300),
+            lookups: 50,
+            skipped: false,
+            search: None,
+        }
     }
 
     /// Runs a lookup, giving up (`None`) when the deadline passes.

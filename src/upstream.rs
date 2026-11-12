@@ -16,6 +16,8 @@ pub struct Upstream {
     store: Store,
     /// Last reachability probe (time, result), reused for 5 minutes.
     probe: std::sync::Arc<tokio::sync::Mutex<Option<(std::time::Instant, bool)>>>,
+    /// Rate limit for requests that actually reach the upstream server (cache hits are free).
+    limiter: Option<std::sync::Arc<governor::DefaultDirectRateLimiter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +51,8 @@ pub fn route_key(path: &str, query: &[(String, String)]) -> String {
 }
 
 impl Upstream {
-    pub fn new(base: String, ttl: Duration, store: Store, user_agent: &str) -> Self {
+    /// `rate`: max requests per second to the upstream server (0 = unlimited).
+    pub fn new(base: String, ttl: Duration, store: Store, user_agent: &str, rate: u32) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(user_agent)
             .timeout(Duration::from_secs(60))
@@ -57,7 +60,15 @@ impl Upstream {
             .gzip(true)
             .build()
             .expect("http client");
-        Self { http, base, ttl: ttl.as_secs() as i64, store, probe: Default::default() }
+        let limiter = std::num::NonZeroU32::new(rate)
+            .map(|r| std::sync::Arc::new(governor::RateLimiter::direct(governor::Quota::per_second(r))));
+        Self { http, base, ttl: ttl.as_secs() as i64, store, probe: Default::default(), limiter }
+    }
+
+    async fn throttle(&self) {
+        if let Some(l) = &self.limiter {
+            l.until_ready().await;
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -82,6 +93,7 @@ impl Upstream {
         if let Some(etag) = cached.as_ref().and_then(|c| c.etag.as_deref()) {
             req = req.header(header::IF_NONE_MATCH, etag);
         }
+        self.throttle().await;
         let result = req.send().await;
         let stale = |reason: String| match &cached {
             Some(c) => {
@@ -142,6 +154,7 @@ impl Upstream {
         if !body.is_empty() {
             req = req.body(body);
         }
+        self.throttle().await;
         let resp = req.send().await.map_err(|e| UpstreamError::Unavailable(e.to_string()))?;
         let status = resp.status().as_u16();
         if resp.status().is_server_error() {

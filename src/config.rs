@@ -37,6 +37,10 @@ pub struct Config {
     pub search_limit: usize,
     /// Time allowed for MusicBrainz checks while answering a search.
     pub search_timeout: Duration,
+    /// Wait before running a search; a newer, related query (typing) supersedes it.
+    pub search_debounce: Duration,
+    /// Max requests per second sent to the upstream server (cache misses only).
+    pub upstream_rate: u32,
     pub enrich_mb_artists: bool,
     /// Namespace of the UUID v5 synthetic IDs (`UUID_NAMESPACE`: a UUID or a seed string).
     pub id_namespace: uuid::Uuid,
@@ -125,7 +129,11 @@ impl Config {
             prefetch_interval: duration_var("PREFETCH_INTERVAL", "1h")?,
             search_mb_lookups: var_or("SEARCH_MB_LOOKUPS", "5").parse().context("SEARCH_MB_LOOKUPS")?,
             search_limit: var_or("SEARCH_LIMIT", "10").parse().context("SEARCH_LIMIT")?,
-            search_timeout: duration_var("SEARCH_TIMEOUT", "4s")?,
+            search_timeout: duration_var("SEARCH_TIMEOUT", "8s")?,
+            search_debounce: Duration::from_millis(
+                var_or("SEARCH_DEBOUNCE_MS", "500").parse().context("SEARCH_DEBOUNCE_MS")?,
+            ),
+            upstream_rate: var_or("UPSTREAM_RATE", "5").parse().context("UPSTREAM_RATE")?,
             enrich_mb_artists: bool_var("ENRICH_MB_ARTISTS", true)?,
             id_namespace: var("UUID_NAMESPACE")
                 .map(|v| crate::ids::parse_namespace(&v))
@@ -187,6 +195,8 @@ impl Config {
             search_mb_lookups: 5,
             search_limit: 10,
             search_timeout: Duration::from_secs(30),
+            search_debounce: Duration::ZERO,
+            upstream_rate: 0,
             enrich_mb_artists: true,
             id_namespace: crate::ids::DEFAULT_NAMESPACE,
             lidarr_url: None,
