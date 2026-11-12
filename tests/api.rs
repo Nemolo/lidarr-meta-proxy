@@ -648,3 +648,23 @@ async fn bare_mbid_search_finds_artist_or_release_group() {
     let (status, v) = h.get("/search?type=all&query=99999999-9999-4999-8999-999999999999").await;
     assert_eq!((status, v), (200, json!([])));
 }
+
+#[tokio::test]
+async fn upstream_429_is_retried_after_retry_after() {
+    let h = Harness::new().await;
+    let id = "66666666-6666-4666-8666-666666666666";
+    Mock::given(method("GET"))
+        .and(path(format!("/upstream/artist/{id}")))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
+        .up_to_n_times(1)
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/upstream/artist/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": id, "artistname": "After Retry"})))
+        .mount(&h.server)
+        .await;
+    let (status, v) = h.get(&format!("/artist/{id}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(v["artistName"], "After Retry");
+}

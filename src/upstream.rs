@@ -89,22 +89,42 @@ impl Upstream {
             return Ok(UpstreamResponse { status: c.status, body: Bytes::from(c.body.clone()) });
         }
 
-        let mut req = self.http.get(self.url(path)).query(query);
-        if let Some(etag) = cached.as_ref().and_then(|c| c.etag.as_deref()) {
-            req = req.header(header::IF_NONE_MATCH, etag);
-        }
-        self.throttle().await;
-        let result = req.send().await;
         let stale = |reason: String| match &cached {
             Some(c) => {
                 tracing::warn!(route = %key, %reason, "upstream failed, serving stale cache");
                 Ok(UpstreamResponse { status: c.status, body: Bytes::from(c.body.clone()) })
             }
-            None => Err(UpstreamError::Unavailable(reason)),
+            None => {
+                tracing::warn!(route = %key, %reason, "upstream failed, nothing cached");
+                Err(UpstreamError::Unavailable(reason))
+            }
         };
-        let resp = match result {
-            Ok(r) => r,
-            Err(e) => return stale(e.to_string()),
+        // One retry on 429, honouring Retry-After (capped).
+        let mut attempt = 0;
+        let resp = loop {
+            let mut req = self.http.get(self.url(path)).query(query);
+            if let Some(etag) = cached.as_ref().and_then(|c| c.etag.as_deref()) {
+                req = req.header(header::IF_NONE_MATCH, etag);
+            }
+            self.throttle().await;
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => return stale(e.to_string()),
+            };
+            if resp.status() == StatusCode::TOO_MANY_REQUESTS && attempt == 0 {
+                attempt += 1;
+                let wait = resp
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(2)
+                    .clamp(1, 10);
+                tracing::info!(route = %key, wait_secs = wait, "upstream rate limited (429), retrying");
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                continue;
+            }
+            break resp;
         };
         let status = resp.status();
         if status == StatusCode::NOT_MODIFIED

@@ -105,6 +105,10 @@ impl MusicBrainz {
         Self { client, base }
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.client.is_paused()
+    }
+
     /// Reachability as seen by the circuit breaker (`ok`, `paused (…)`, ...).
     pub fn status(&self) -> String {
         self.client.status().unwrap_or_else(|| "ok".into())

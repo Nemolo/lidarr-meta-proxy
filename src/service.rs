@@ -393,7 +393,8 @@ impl App {
                 None => pending.push(hit),
             }
         }
-        if !pending.is_empty() {
+        // While MusicBrainz is paused (unreachable) background checks would only fail.
+        if !pending.is_empty() && !self.mb.is_paused() {
             tracing::debug!(pending = pending.len(), "artist hits left for background verification");
             let app = self.clone();
             let search = budget.search.clone();
@@ -497,7 +498,8 @@ impl App {
                 None => pending.push(hit),
             }
         }
-        if !pending.is_empty() {
+        // While MusicBrainz is paused (unreachable) background checks would only fail.
+        if !pending.is_empty() && !self.mb.is_paused() {
             tracing::debug!(pending = pending.len(), "album hits left for background verification");
             let app = self.clone();
             let search = budget.search.clone();
@@ -646,7 +648,8 @@ impl SearchBudget {
     fn background() -> Self {
         Self {
             deadline: Instant::now() + std::time::Duration::from_secs(300),
-            lookups: 50,
+            // Each search may leave some verifications for later: keep MusicBrainz load low.
+            lookups: 10,
             skipped: false,
             search: None,
         }

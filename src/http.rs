@@ -72,8 +72,13 @@ impl Breaker {
 
     fn failure(&self, name: &str, error: &str) {
         let mut s = self.state.lock().unwrap();
-        s.failures += 1;
         s.last_error = Some(error.chars().take(200).collect());
+        // Requests already in flight when the breaker opened fail too: they must
+        // not extend the pause (only a probe after the pause escalates it).
+        if s.open_until.is_some_and(|t| t > Instant::now()) {
+            return;
+        }
+        s.failures += 1;
         if s.failures >= self.threshold {
             let pause = s.pause;
             s.open_until = Some(Instant::now() + pause);
@@ -144,6 +149,11 @@ impl SourceClient {
         self
     }
 
+    /// Whether the circuit breaker currently blocks requests.
+    pub fn is_paused(&self) -> bool {
+        self.breaker.as_ref().is_some_and(|b| b.paused_for().is_some())
+    }
+
     /// Circuit breaker status (`None` if the source has none).
     pub fn status(&self) -> Option<String> {
         self.breaker.as_ref().map(|b| b.status())
@@ -187,6 +197,12 @@ impl SourceClient {
     {
         let mut delay = self.retry_base;
         for attempt in 0..4 {
+            // Do not keep retrying once the breaker has opened meanwhile.
+            if attempt > 0
+                && let Some(d) = self.breaker.as_ref().and_then(|b| b.paused_for())
+            {
+                return Err(FetchError::Paused(self.name, d.as_secs()).into());
+            }
             self.throttle().await;
             let resp = match build(&self.http).send().await {
                 Ok(r) => r,

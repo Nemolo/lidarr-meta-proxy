@@ -69,3 +69,23 @@ async fn server_errors_count_and_success_resets() {
     assert!(c.json(|h| h.get(format!("{}/up", server.uri()))).await.unwrap().is_some());
     assert_eq!(c.status().unwrap(), "ok");
 }
+
+#[tokio::test]
+async fn in_flight_failures_do_not_extend_the_pause() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/slow-down"))
+        .respond_with(ResponseTemplate::new(503).set_delay(Duration::from_millis(100)))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let c = client(&dir).await;
+    let url = format!("{}/slow-down", server.uri());
+    // Eight concurrent requests all failing: the breaker opens once, with the base pause.
+    let calls = (0..8).map(|_| c.json(|h| h.get(&url)));
+    futures::future::join_all(calls).await;
+    let status = c.status().unwrap();
+    assert!(status.starts_with("paused"), "{status}");
+    let secs: u64 = status["paused (".len()..].split('s').next().unwrap().parse().unwrap();
+    assert!(secs <= 60, "pause escalated by in-flight failures: {status}");
+}
