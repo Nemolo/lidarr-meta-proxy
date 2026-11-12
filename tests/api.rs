@@ -157,6 +157,8 @@ async fn passthrough_is_cached_and_normalized() {
         .mount(&h.server)
         .await;
     for _ in 0..2 {
+        // The cache is written in background: give it a moment.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let (status, v) = h.get(&format!("/artist/{MB_ARTIST}")).await;
         assert_eq!(status, 200);
         assert_eq!(v["artistName"], "Known Band");
@@ -205,6 +207,7 @@ async fn stale_cache_served_when_upstream_down() {
         .mount(&h.server)
         .await;
     assert_eq!(h.get(&format!("/artist/{id}")).await.0, 200);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await; // background cache write
     let (status, v) = h.get(&format!("/artist/{id}")).await;
     assert_eq!(status, 200);
     assert_eq!(v["artistName"], "Cached");
@@ -667,4 +670,30 @@ async fn upstream_429_is_retried_after_retry_after() {
     let (status, v) = h.get(&format!("/artist/{id}")).await;
     assert_eq!(status, 200);
     assert_eq!(v["artistName"], "After Retry");
+}
+
+#[tokio::test]
+async fn upstream_cache_is_compressed_and_pruned() {
+    use lidarr_meta_proxy::store::Store;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("meta.db")).await.unwrap();
+    let body = serde_json::to_vec(&json!({"albums": vec!["x".repeat(100); 1000]})).unwrap();
+    store.upstream_put("artist/x", &body, 200, Some("\"e\"")).await.unwrap();
+    store.upstream_put("search?query=old&type=all", b"[]", 200, None).await.unwrap();
+    let got = store.upstream_get("artist/x").await.unwrap().unwrap();
+    assert_eq!(got.body, body);
+    assert_eq!(got.etag.as_deref(), Some("\"e\""));
+    let stored: (i64,) = sqlx::query_as("SELECT length(body) FROM upstream_cache WHERE route = 'artist/x'")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert!((stored.0 as usize) < body.len() / 10, "stored {} of {} bytes", stored.0, body.len());
+    // Old search answers are dropped, recent ones kept.
+    sqlx::query("UPDATE upstream_cache SET fetched_at = fetched_at - 8 * 86400 WHERE route LIKE 'search%'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(store.maintenance().await.unwrap(), 1);
+    assert!(store.upstream_get("search?query=old&type=all").await.unwrap().is_none());
+    assert!(store.upstream_get("artist/x").await.unwrap().is_some());
 }

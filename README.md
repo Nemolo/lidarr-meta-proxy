@@ -211,6 +211,11 @@ MB con lo stesso UUID.
 `migrations/` (applicate all'avvio con `sqlx::migrate!`): `entity`, `source_link`, `upstream_cache`,
 `source_cache` (risposte Deezer/Spotify/MB/iTunes), `image`, `entity_image`, `reconcile_log`, `enrichment`.
 
+Le risposte upstream sono salvate compresse (gzip) e scritte in background, così la risposta a Lidarr non attende il
+disco. Un job orario elimina le ricerche in cache più vecchie di 7 giorni e le altre voci di cache più vecchie di
+90 giorni, poi compatta il WAL (`wal_checkpoint(TRUNCATE)`). Con `/data` su un disco lento (HDD, cartella di rete)
+le scritture possono comunque rallentare: SQLite in WAL rende meglio su SSD o disco locale.
+
 ## Release
 
 Il workflow `.github/workflows/release.yml` pubblica, per ogni versione:

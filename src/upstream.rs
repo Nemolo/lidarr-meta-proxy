@@ -130,7 +130,10 @@ impl Upstream {
         if status == StatusCode::NOT_MODIFIED
             && let Some(c) = &cached
         {
-            let _ = self.store.upstream_touch(&key).await;
+            let (store, key) = (self.store.clone(), key.clone());
+            tokio::spawn(async move {
+                let _ = store.upstream_touch(&key).await;
+            });
             return Ok(UpstreamResponse { status: c.status, body: Bytes::from(c.body.clone()) });
         }
         if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
@@ -145,11 +148,14 @@ impl Upstream {
         if status == StatusCode::OK && serde_json::from_slice::<Value>(&body).is_err() {
             return stale("invalid JSON from upstream".into());
         }
-        if cacheable
-            && (status == StatusCode::OK || status == StatusCode::NOT_FOUND)
-            && let Err(e) = self.store.upstream_put(&key, &body, status.as_u16(), etag.as_deref()).await
-        {
-            tracing::warn!(error = %e, "failed to cache upstream response");
+        if cacheable && (status == StatusCode::OK || status == StatusCode::NOT_FOUND) {
+            // Written in background: the answer to Lidarr does not wait for the disk.
+            let (store, key, body, etag) = (self.store.clone(), key.clone(), body.clone(), etag.clone());
+            tokio::spawn(async move {
+                if let Err(e) = store.upstream_put(&key, &body, status.as_u16(), etag.as_deref()).await {
+                    tracing::warn!(route = %key, error = %e, "failed to cache upstream response");
+                }
+            });
         }
         Ok(UpstreamResponse { status: status.as_u16(), body })
     }

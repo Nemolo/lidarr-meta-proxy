@@ -5,7 +5,7 @@ use std::{path::Path, str::FromStr, time::Duration};
 use anyhow::Result;
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{
-    Row, SqlitePool,
+    ConnectOptions, Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous},
 };
 
@@ -95,7 +95,9 @@ impl Store {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
-            .busy_timeout(Duration::from_secs(10));
+            .busy_timeout(Duration::from_secs(10))
+            // Writes can wait behind a WAL checkpoint on slow disks: only flag really slow ones.
+            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(5));
         let pool = SqlitePoolOptions::new().max_connections(8).connect_with(opts).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
@@ -369,12 +371,18 @@ impl Store {
     // ------------------------------------------------------------------ caches
 
     pub async fn upstream_get(&self, route: &str) -> Result<Option<CachedResponse>> {
-        let row = sqlx::query("SELECT body, status, fetched_at, etag FROM upstream_cache WHERE route = ?")
+        let row = sqlx::query("SELECT body, status, fetched_at, etag, encoding FROM upstream_cache WHERE route = ?")
             .bind(route)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.map(|r| CachedResponse {
-            body: r.get("body"),
+        let Some(r) = row else { return Ok(None) };
+        let raw: Vec<u8> = r.get("body");
+        let body = match r.get::<Option<String>, _>("encoding").as_deref() {
+            Some("gzip") => gunzip(&raw)?,
+            _ => raw,
+        };
+        Ok(Some(CachedResponse {
+            body,
             status: r.get::<i64, _>("status") as u16,
             fetched_at: r.get("fetched_at"),
             etag: r.get("etag"),
@@ -383,18 +391,44 @@ impl Store {
 
     pub async fn upstream_put(&self, route: &str, body: &[u8], status: u16, etag: Option<&str>) -> Result<()> {
         sqlx::query(
-            "INSERT INTO upstream_cache (route, body, status, fetched_at, etag) VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO upstream_cache (route, body, status, fetched_at, etag, encoding) VALUES (?, ?, ?, ?, ?, 'gzip')
              ON CONFLICT (route) DO UPDATE SET body = excluded.body, status = excluded.status,
-               fetched_at = excluded.fetched_at, etag = excluded.etag",
+               fetched_at = excluded.fetched_at, etag = excluded.etag, encoding = excluded.encoding",
         )
         .bind(route)
-        .bind(body)
+        .bind(gzip(body)?)
         .bind(status as i64)
         .bind(now())
         .bind(etag)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Housekeeping: drops cache rows nobody will use again and compacts the WAL.
+    /// Search answers are kept 7 days, other upstream answers (stale fallback when
+    /// the upstream is down) and third-party JSON 90 days. Returns rows deleted.
+    pub async fn maintenance(&self) -> Result<u64> {
+        let ts = now();
+        let mut deleted = 0;
+        deleted += sqlx::query("DELETE FROM upstream_cache WHERE route LIKE 'search%' AND fetched_at < ?")
+            .bind(ts - 7 * 86400)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        deleted += sqlx::query("DELETE FROM upstream_cache WHERE fetched_at < ?")
+            .bind(ts - 90 * 86400)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        deleted += sqlx::query("DELETE FROM source_cache WHERE fetched_at < ?")
+            .bind(ts - 90 * 86400)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(&self.pool).await?;
+        sqlx::query("PRAGMA optimize").execute(&self.pool).await?;
+        Ok(deleted)
     }
 
     pub async fn upstream_touch(&self, route: &str) -> Result<()> {
@@ -489,4 +523,18 @@ impl Store {
         .await?;
         Ok(())
     }
+}
+
+fn gzip(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(data.len() / 4), flate2::Compression::fast());
+    enc.write_all(data)?;
+    Ok(enc.finish()?)
+}
+
+fn gunzip(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::with_capacity(data.len() * 4);
+    flate2::read::GzDecoder::new(data).read_to_end(&mut out)?;
+    Ok(out)
 }
