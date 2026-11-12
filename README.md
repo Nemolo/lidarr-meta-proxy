@@ -55,6 +55,10 @@ gli URL delle immagini restituiti a Lidarr sono costruiti da lì.
 | `SEARCH_LIMIT` | `10` | Risultati Deezer/Spotify per ricerca |
 | `SEARCH_MB_LOOKUPS` | `5` | Lookup MB massimi per ricerca (deduplica) |
 | `UUID_NAMESPACE` | `6c1da2f0-5b7e-4c3a-9f1e-2d8b0a6c4e51` | Namespace degli UUID v5 sintetici: un UUID, oppure una stringa qualsiasi usata come seed (`uuid5(NAMESPACE_OID, seed)`). **Non cambiarlo dopo il primo avvio** (vedi sotto) |
+| `LIDARR_URL` | — | Lidarr da configurare all'avvio (es. `http://lidarr:8686`), vedi sotto |
+| `LIDARR_API_KEY` | — | Chiave API di Lidarr, oppure… |
+| `LIDARR_CONFIG_XML` | — | …percorso del `config.xml` di Lidarr montato in sola lettura, da cui leggere la chiave |
+| `LIDARR_METADATA_SOURCE` | `PUBLIC_URL` | Valore da scrivere in `MetadataSource` |
 | `RUST_LOG` | `info` | Livello di log |
 
 Per i test esistono anche `DEEZER_URL`, `SPOTIFY_URL`, `SPOTIFY_AUTH_URL`, `ITUNES_URL`, `MB_URL`.
@@ -64,6 +68,36 @@ Il volume `/data` contiene database e immagini: **va salvato**. Gli UUID sinteti
 
 Il container gira come utente non-root `65532`; con un bind mount (invece del volume nominato) la
 cartella deve essere scrivibile da quell'utente (`chown 65532:65532 ./data`).
+
+### Configurazione automatica di Lidarr
+
+Con `LIDARR_URL` più `LIDARR_API_KEY` (o `LIDARR_CONFIG_XML`) il proxy imposta da solo `MetadataSource` di Lidarr
+all'avvio, senza script né container aggiuntivi:
+
+```yaml
+  lidarr-meta:
+    environment:
+      - PUBLIC_URL=http://lidarr-meta:5001
+      - LIDARR_URL=http://lidarr:8686
+      - LIDARR_CONFIG_XML=/lidarr/config.xml
+    volumes:
+      - /percorso/lidarr-meta:/data
+      - /percorso/config/lidarr:/lidarr:ro   # la cartella, non il file: config.xml può non esistere ancora
+  lidarr:
+    depends_on:
+      lidarr-meta:
+        condition: service_healthy
+```
+
+Ordine di avvio: Lidarr dipende dal proxy (`service_healthy`), quindi il proxy parte per primo e diventa
+healthy senza aspettare Lidarr; la configurazione gira in background e riprova ogni 10 s per 10 minuti finché
+l'API di Lidarr non risponde (la chiave viene riletta a ogni tentativo, così funziona anche alla prima
+installazione). Scrive il valore solo se diverso, poi termina: non sovrascrive periodicamente modifiche fatte a
+mano. L'esito è nei log e in `/health` (`lidarrSetup`: `disabled`, `pending`, `configured`, `failed: …`).
+
+Per tornare al server ufficiale togliere queste variabili **e** azzerare il valore
+(`./scripts/set-metadata-source.sh ""`), altrimenti al riavvio successivo il proxy lo reimposta.
+`config.xml` deve essere leggibile dall'utente del container (uid 65532; con i permessi standard `644` lo è).
 
 ## Endpoint
 

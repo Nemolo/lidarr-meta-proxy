@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
         deezer = cfg.deezer_enabled,
         spotify = cfg.spotify_enabled(),
         itunes = cfg.itunes_enabled,
+        lidarr_setup = cfg.lidarr_url.as_deref().unwrap_or("disabled"),
         "starting lidarr-meta-proxy"
     );
     let bind = cfg.bind_addr;

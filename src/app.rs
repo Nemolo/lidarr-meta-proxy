@@ -28,6 +28,7 @@ pub struct App {
     pub itunes: Option<Itunes>,
     pub mb: MusicBrainz,
     pub images: Images,
+    pub lidarr_setup: Option<Arc<crate::lidarr::LidarrSetup>>,
 }
 
 pub type SharedApp = Arc<App>;
@@ -93,7 +94,9 @@ impl App {
         );
         let upstream = Upstream::new(cfg.upstream_url.clone(), cfg.upstream_cache_ttl, store.clone(), &ua);
         let images = Images::new(store.clone(), cfg.image_dir.clone(), cfg.public_url.clone(), &ua);
-        Ok(Self { cfg, store, upstream, deezer, spotify, itunes, mb, images })
+        let lidarr_setup =
+            cfg.lidarr_setup()?.map(|(url, key, target)| Arc::new(crate::lidarr::LidarrSetup::new(url, key, target)));
+        Ok(Self { cfg, store, upstream, deezer, spotify, itunes, mb, images, lidarr_setup })
     }
 
     pub fn source_ttl(&self) -> i64 {

@@ -8,6 +8,7 @@ pub mod enrich;
 pub mod http;
 pub mod ids;
 pub mod images;
+pub mod lidarr;
 pub mod model;
 pub mod reconcile;
 pub mod routes;

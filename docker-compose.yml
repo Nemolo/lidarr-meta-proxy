@@ -1,5 +1,6 @@
 # Example: Lidarr + lidarr-meta-proxy on the same network.
-# After the first start run scripts/set-metadata-source.sh to point Lidarr at the proxy.
+# The proxy points Lidarr at itself on startup (LIDARR_URL + LIDARR_CONFIG_XML);
+# without those variables use scripts/set-metadata-source.sh instead.
 services:
   lidarr-meta:
     # Published image; to build from source instead, uncomment `build` (and run `docker compose build`).
@@ -10,16 +11,21 @@ services:
     environment:
       # URL under which Lidarr reaches the proxy (image URLs are built from it).
       PUBLIC_URL: http://lidarr-meta:5001
-      MB_USER_AGENT: "lidarr-meta-proxy/0.1 ( you@example.com )"
+      MB_USER_AGENT: "lidarr-meta-proxy/0.2 ( you@example.com )"
       ITUNES_COUNTRY: it
       # Namespace/seed of synthetic UUIDs; set it before the first start and never change it.
       # UUID_NAMESPACE: my-instance-seed
       # Optional secondary source:
       # SPOTIFY_CLIENT_ID: ...
       # SPOTIFY_CLIENT_SECRET: ...
+      # Set Lidarr's MetadataSource to PUBLIC_URL at startup, reading the API key from config.xml.
+      LIDARR_URL: http://lidarr:8686
+      LIDARR_CONFIG_XML: /lidarr/config.xml
       RUST_LOG: info,lidarr_meta_proxy=debug
     volumes:
       - lidarr-meta-data:/data
+      # Lidarr's config folder, read-only (mount the folder: config.xml may not exist yet).
+      - lidarr-config:/lidarr:ro
     networks: [media]
 
   lidarr:

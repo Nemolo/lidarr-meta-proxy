@@ -38,6 +38,13 @@ pub struct Config {
     pub enrich_mb_artists: bool,
     /// Namespace of the UUID v5 synthetic IDs (`UUID_NAMESPACE`: a UUID or a seed string).
     pub id_namespace: uuid::Uuid,
+    /// Lidarr to configure at startup (`MetadataSource` → this proxy). Opt-in.
+    pub lidarr_url: Option<String>,
+    pub lidarr_api_key: Option<String>,
+    /// Lidarr's `config.xml`, mounted read-only, to read the API key from.
+    pub lidarr_config_xml: Option<PathBuf>,
+    /// Value written to Lidarr's `MetadataSource` (default: `PUBLIC_URL`).
+    pub lidarr_metadata_source: Option<String>,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -120,7 +127,29 @@ impl Config {
             id_namespace: var("UUID_NAMESPACE")
                 .map(|v| crate::ids::parse_namespace(&v))
                 .unwrap_or(crate::ids::DEFAULT_NAMESPACE),
+            lidarr_url: var("LIDARR_URL").map(|u| u.trim_end_matches('/').to_string()),
+            lidarr_api_key: var("LIDARR_API_KEY"),
+            lidarr_config_xml: var("LIDARR_CONFIG_XML").map(PathBuf::from),
+            lidarr_metadata_source: var("LIDARR_METADATA_SOURCE"),
         })
+    }
+
+    /// Lidarr self-configuration, if requested. Errors on incomplete settings.
+    pub fn lidarr_setup(&self) -> Result<Option<(String, crate::lidarr::KeySource, String)>> {
+        let key = match (&self.lidarr_api_key, &self.lidarr_config_xml) {
+            (Some(k), _) => Some(crate::lidarr::KeySource::Value(k.clone())),
+            (None, Some(p)) => Some(crate::lidarr::KeySource::ConfigXml(p.clone())),
+            (None, None) => None,
+        };
+        match (&self.lidarr_url, key) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => anyhow::bail!("LIDARR_API_KEY / LIDARR_CONFIG_XML require LIDARR_URL"),
+            (Some(_), None) => anyhow::bail!("LIDARR_URL requires LIDARR_API_KEY or LIDARR_CONFIG_XML"),
+            (Some(url), Some(key)) => {
+                let target = self.lidarr_metadata_source.clone().unwrap_or_else(|| self.public_url.clone());
+                Ok(Some((url.clone(), key, target)))
+            }
+        }
     }
 
     pub fn spotify_enabled(&self) -> bool {
@@ -156,6 +185,10 @@ impl Config {
             search_limit: 10,
             enrich_mb_artists: true,
             id_namespace: crate::ids::DEFAULT_NAMESPACE,
+            lidarr_url: None,
+            lidarr_api_key: None,
+            lidarr_config_xml: None,
+            lidarr_metadata_source: None,
         }
     }
 }

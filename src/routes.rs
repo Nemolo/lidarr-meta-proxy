@@ -100,6 +100,10 @@ async fn health(State(app): State<SharedApp>) -> Response {
     let db = app.store.ping().await;
     let upstream = app.upstream.reachable().await;
     let status = if db { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let lidarr = match &app.lidarr_setup {
+        Some(s) => s.state.read().await.label(),
+        None => "disabled".to_string(),
+    };
     (
         status,
         Json(json!({
@@ -109,6 +113,7 @@ async fn health(State(app): State<SharedApp>) -> Response {
             "deezer": app.deezer.is_some(),
             "spotify": app.spotify.is_some(),
             "itunes": app.itunes.is_some(),
+            "lidarrSetup": lidarr,
             "version": env!("CARGO_PKG_VERSION"),
         })),
     )

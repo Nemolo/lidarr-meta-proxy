@@ -243,6 +243,10 @@ impl App {
 
 /// Spawns the periodic reconciliation and prefetch loops.
 pub fn spawn_jobs(app: Arc<App>) {
+    if let Some(setup) = app.lidarr_setup.clone() {
+        // Lidarr often starts after the proxy: retry every 10 s for 10 minutes.
+        tokio::spawn(setup.run(Duration::from_secs(10), 60));
+    }
     let a = app.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(300)).await;
