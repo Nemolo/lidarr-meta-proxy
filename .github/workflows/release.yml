@@ -56,7 +56,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" != "push" ] && git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
             echo "::error::tag v$version already exists"; exit 1
           fi
-          # Releases are cut from main only (lint runs there).
+          # Releases are cut from main only.
           git fetch --quiet origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::$GITHUB_SHA is not on main: release only commits merged into main"; exit 1
@@ -68,17 +68,13 @@ jobs:
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
           } >> "$GITHUB_OUTPUT"
 
-  test:
+  # Same checks as on main / pull requests: lint, tests, Docker build.
+  checks:
     needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
+    uses: ./.github/workflows/ci.yml
 
   binaries:
-    needs: [prepare, test]
+    needs: [prepare, checks]
     strategy:
       matrix:
         include:
@@ -114,7 +110,7 @@ jobs:
           if-no-files-found: error
 
   docker:
-    needs: [prepare, test]
+    needs: [prepare, checks]
     permissions:
       contents: read
       packages: write

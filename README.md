@@ -178,9 +178,8 @@ Il workflow si ferma se la versione non coincide con `Cargo.toml` o se il tag es
 
 | Workflow | Quando | Cosa |
 |---|---|---|
-| `ci.yml` | solo pull request | `cargo test`, build Docker |
-| `lint.yml` | solo push su `main` | `cargo fmt --check`, `cargo clippy -D warnings` |
-| `release.yml` | tag `vX.Y.Z` o avvio manuale | test, binari, immagine GHCR, GitHub Release con changelog |
+| `ci.yml` | push su `main`, pull request (e richiamato dalla release) | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, build Docker |
+| `release.yml` | tag `vX.Y.Z` o avvio manuale, solo commit su `main` | tutti i controlli di `ci.yml`, poi binari, immagine GHCR e GitHub Release con changelog |
 
 ## Sviluppo
 

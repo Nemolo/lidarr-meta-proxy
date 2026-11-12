@@ -1,11 +1,28 @@
 name: CI
 
-# Tests and Docker build on pull requests only.
-# Lint (rustfmt + clippy) lives in lint.yml and runs only on main.
+# Code checks: lint, tests, Docker build.
+# Runs on pushes to main, on pull requests, and from release.yml (workflow_call)
+# before anything is published.
 on:
+  push:
+    branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
@@ -15,7 +32,7 @@ jobs:
       - run: cargo test --locked
   docker:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [lint, test]
     steps:
       - uses: actions/checkout@v5
       - run: docker build -t lidarr-meta-proxy:ci .
