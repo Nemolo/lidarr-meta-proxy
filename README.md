@@ -218,7 +218,7 @@ Il workflow `.github/workflows/release.yml` pubblica, per ogni versione:
 - l'immagine Docker multi-arch (linux/amd64, linux/arm64) su `ghcr.io/nemolo/lidarr-meta-proxy`
   con i tag `X.Y.Z`, `X.Y` e `latest` (le pre-release, es. `0.2.0-rc.1`, solo con il tag esatto);
 - una GitHub Release con il changelog generato da [git-cliff](https://git-cliff.org) (`cliff.toml`) a partire
-  dai commit dall'ultimo tag, binari Linux x86_64 e aarch64 (glibc ≥ 2.35) e checksum SHA-256.
+  dai commit dall'ultimo tag, binari Linux x86_64 e aarch64 (glibc ≥ 2.36, compilati in Debian bookworm) e checksum SHA-256.
 
 Il changelog si basa sui [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `perf:`,
 `refactor:`, `docs:`, `test:`, `ci:`/`build:`, `chore:` finiscono nelle rispettive sezioni, `!` o `BREAKING CHANGE`
@@ -241,6 +241,10 @@ Il workflow si ferma se la versione non coincide con `Cargo.toml` o se il tag es
 |---|---|---|
 | `ci.yml` | push su `main`, pull request (e richiamato dalla release) | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, build Docker |
 | `release.yml` | tag `vX.Y.Z` o avvio manuale, solo commit su `main` | tutti i controlli di `ci.yml`, poi binari, immagine GHCR e GitHub Release con changelog |
+
+I runner sono fissati su `ubuntu-26.04` / `ubuntu-26.04-arm` (non `ubuntu-latest`), così un cambio di versione
+del runner non modifica le build senza preavviso; le action usano le ultime major (`actions/checkout@v7`,
+`upload-artifact@v7`, `download-artifact@v8`, `docker/*` v4–v7).
 
 ## Sviluppo
 

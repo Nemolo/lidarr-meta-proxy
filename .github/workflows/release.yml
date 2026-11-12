@@ -26,13 +26,13 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
       image: ${{ steps.v.outputs.image }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: v
@@ -78,15 +78,16 @@ jobs:
     strategy:
       matrix:
         include:
-          # Ubuntu 22.04 runners: binaries need glibc >= 2.35 only.
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-26.04
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
+    # Built in Debian bookworm (same image as the Dockerfile) rather than on the
+    # runner's Ubuntu 26.04, so the binaries only need glibc >= 2.36.
+    container: rust:1.97-bookworm
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
@@ -101,7 +102,7 @@ jobs:
           cp -r scripts "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.target }}
           path: |
@@ -119,26 +120,26 @@ jobs:
         include:
           - platform: linux/amd64
             arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - platform: linux/arm64
             arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ needs.prepare.outputs.image }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
         name: Build and push by digest
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -152,7 +153,7 @@ jobs:
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -161,24 +162,24 @@ jobs:
 
   docker-manifest:
     needs: [prepare, docker]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digest-*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ needs.prepare.outputs.image }}
           # Pre-releases get only their exact version tag.
@@ -200,11 +201,11 @@ jobs:
 
   release:
     needs: [prepare, binaries, docker-manifest]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: taiki-e/install-action@v2
@@ -226,7 +227,7 @@ jobs:
           echo "changes since: ${prev:-first commit}"
           git cliff --tag "v$VERSION" --strip all "${range[@]}" > changelog.md
           cat changelog.md
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: bin-*
@@ -255,7 +256,7 @@ jobs:
 
           ## Binaries
 
-          Linux x86_64 and aarch64 (glibc >= 2.35), with SHA-256 checksums.
+          Linux x86_64 and aarch64 (glibc >= 2.36, e.g. Debian 12+, Ubuntu 22.10+), with SHA-256 checksums.
           EOF
           args=(--repo "$GITHUB_REPOSITORY" --title "v$VERSION" --notes-file notes.md --target "$GITHUB_SHA")
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
