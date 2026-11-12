@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.97-bookworm AS build
+FROM rust:1.99.1-bookworm AS build
 WORKDIR /src
 # Dependency layer, rebuilt only when the manifests change.
 COPY Cargo.toml Cargo.lock ./

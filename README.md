@@ -243,7 +243,8 @@ Il workflow si ferma se la versione non coincide con `Cargo.toml` o se il tag es
 | `release.yml` | tag `vX.Y.Z` o avvio manuale, solo commit su `main` | tutti i controlli di `ci.yml`, poi binari, immagine GHCR e GitHub Release con changelog |
 
 I runner sono fissati su `ubuntu-26.04` / `ubuntu-26.04-arm` (non `ubuntu-latest`), così un cambio di versione
-del runner non modifica le build senza preavviso; le action usano le ultime major (`actions/checkout@v7`,
+del runner non modifica le build senza preavviso; Rust è fissato a 1.99.1 in `rust-toolchain.toml` (sviluppo locale e CI) e nelle immagini `rust:1.99.1-bookworm`
+(Dockerfile e build dei binari); per aggiornarlo vanno cambiati tutti e tre i punti. Le action usano le ultime major (`actions/checkout@v7`,
 `upload-artifact@v7`, `download-artifact@v8`, `docker/*` v4–v7).
 
 ## Sviluppo

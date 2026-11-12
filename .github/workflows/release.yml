@@ -85,7 +85,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Built in Debian bookworm (same image as the Dockerfile) rather than on the
     # runner's Ubuntu 26.04, so the binaries only need glibc >= 2.36.
-    container: rust:1.97-bookworm
+    container: rust:1.99.1-bookworm
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2

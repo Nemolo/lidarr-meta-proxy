@@ -1,0 +1,7 @@
+# Rust version used everywhere: local builds, CI and the Docker images.
+# When bumping it, also update the `rust:<version>-bookworm` images in
+# Dockerfile and .github/workflows/release.yml, and `toolchain:` in the workflows.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
